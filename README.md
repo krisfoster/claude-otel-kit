@@ -7,6 +7,45 @@ sandbox (claude)  --OTLP/HTTP-->  sbx proxy  -->  otel-desktop-viewer on your ho
    resource attributes: sandbox.name, sandbox.id, service.name=claude-code
 ```
 
+## Quick start
+
+You need `sbx` (v0.45 or later, signed in) and [otel-desktop-viewer](https://github.com/CtrlSpice/otel-desktop-viewer) (`brew tap ctrlspice/otel-desktop-viewer && brew install --cask otel-desktop-viewer`).
+
+```
+# 1. Get it and put the claude-otel command on your PATH
+git clone https://github.com/krisfoster/claude-otel-kit
+cd claude-otel-kit
+./install.sh
+
+# 2. Start a Claude sandbox on this repo with the kit applied.
+#    --start-viewer launches the viewer if it is not already running.
+claude-otel --start-viewer --name otel-demo .
+```
+
+Claude opens in the sandbox. Send it a prompt, for example `list the files in this repo and summarise them`.
+
+```
+# 3. Open the viewer in your browser (a second terminal is fine).
+#    `open` is macOS; elsewhere just visit the URL.
+open http://localhost:8000
+```
+
+Each prompt shows up as a trace (`claude_code.interaction`) with a span per model call and per tool call, plus matching logs and metrics. Every span, log and metric carries `sandbox.name=otel-demo` and a `sandbox.id`, which is how you match telemetry to the sandbox. To check from the terminal:
+
+```
+otel-desktop-viewer traces --since 10m
+otel-desktop-viewer query 'SELECT DISTINCT resource.attributes."sandbox.name"::VARCHAR AS sandbox FROM spans'
+```
+
+When you are done:
+
+```
+sbx rm otel-demo                                      # remove the sandbox
+kill $(cat ~/.local/state/claude-otel/viewer-4318.pid)  # stop the viewer the wrapper started
+```
+
+The rest of this page covers installation options, the kit's arguments, and how it works.
+
 ## Prerequisites
 
 - `sbx` v0.45 or later (v3 kits), signed in.
