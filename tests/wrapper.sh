@@ -163,6 +163,30 @@ check "kills the viewer it started (hung case)"   bash -c '! kill -0 "$(cat "$0"
 run_start 14812 CLAUDE_OTEL_START_WAIT=abc
 check "a bad CLAUDE_OTEL_START_WAIT is rejected"  has "CLAUDE_OTEL_START_WAIT must be a number" "$OUT"
 
+echo "== claude-otel options placed after sbx options"
+for misplaced in "--port 4318" "--ui-port 18000" "--capture none" "--start-viewer" "--db /tmp/x.db" "--check" "--stop-viewer" "--port=4318"; do
+  run_wrapper "" --name x $misplaced
+  check "'$misplaced' after --name is rejected"     test "$RC" != 0
+  check "'$misplaced': says to put it first"        has "must come before the sbx options" "$OUT"
+  check "'$misplaced': sbx is never called"         test -z "$CALLS"
+done
+run_wrapper "" --port "$PORT_A" --name x --detach -- --port 5
+check "an agent's own --port after -- is left alone" has "sbx run claude" "$CALLS"
+run_wrapper "" --port "$PORT_A" --name x --detach
+check "options in the right order still work"      has "--name x --detach" "$CALLS"
+
+echo "== --port range (the kit allows the sandbox to reach this host port)"
+port_run() { OUT="$(PATH="$T/bin:$PATH" "$ROOT/bin/claude-otel" --check --port "$1" 2>&1)"; RC=$?; }
+for p in 80 1024 65536 99999 0 0443 01025 abc 12-3; do
+  port_run "$p"
+  check "--port $p is rejected"                   test "$RC" != 0
+  check "--port $p explains the allowed range"    has "--port must be a number from 1025 to 65535" "$OUT"
+done
+for p in 1025 4318 65535; do
+  port_run "$p"
+  check "--port $p is accepted"                   test "$RC" = 0
+done
+
 echo "== edge cases"
 run_wrapper "old:$PORT_A" --port $PORT_A --name fresh2 .
 check "a different name creates a new sandbox"    has "--kit $ROOT/kit" "$CALLS"

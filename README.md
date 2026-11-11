@@ -67,7 +67,7 @@ The kit itself needs no install: `--kit ./kit` is read when a sandbox is created
 ./install.sh uninstall            # removes the link, only if it points at this repo
 ```
 
-It prints a note if the bin directory is not on your PATH, or if `sbx` or `otel-desktop-viewer` is missing. It never overwrites a file it did not create unless you pass `--force`. The link points back into this checkout, so keep the repo where it is; `git pull` updates the wrapper and the kit together. Without installing, run `bin/claude-otel` by path.
+It prints a note if the bin directory is not on your PATH, or if `sbx` or `otel-desktop-viewer` is missing. It never replaces or removes a file or directory that is not one of its own links. A link left behind by a checkout you moved or deleted is detected (it points at a `.../bin/claude-otel` that no longer exists) and is replaced by `install.sh`, or removed by `install.sh uninstall`, without `--force`. A link to *another* checkout that still exists needs `--force` to switch or remove, so one working checkout cannot silently hijack another's. The link points back into this checkout, so keep the repo where it is; `git pull` updates the wrapper and the kit together. Without installing, run `bin/claude-otel` by path.
 
 ## Use
 
@@ -77,7 +77,7 @@ With the host checks (recommended):
 claude-otel --start-viewer --name my-sbx .
 ```
 
-The wrapper checks the viewer is installed (prints the install command and stops if not), checks something is listening on the OTLP port (warns if not, or starts one with `--start-viewer`), then runs `sbx run claude --kit kit/ ...`. Everything after its own options goes to `sbx run`.
+The wrapper checks the viewer is installed (prints the install command and stops if not), checks something is listening on the OTLP port (warns if not, or starts one with `--start-viewer`), then runs `sbx run claude --kit kit/ ...`. Everything after its own options goes to `sbx run`, so put the wrapper's options first (`claude-otel --port 4319 --name my-sbx .`). If one turns up after an sbx option, the wrapper says so instead of letting `sbx` fail with "unknown flag". Options that take a value are written `--port N`, not `--port=N`.
 
 Or use the kit directly:
 
@@ -102,7 +102,7 @@ Pass with `--kit-arg name=value` (the wrapper sets `viewerPort` and `capture` fo
 
 | Arg | Default | Meaning |
 |---|---|---|
-| `viewerPort` | `4318` | OTLP/HTTP port of the viewer on the host. Also the one egress allow rule (`localhost:<port>`). |
+| `viewerPort` | `4318` | OTLP/HTTP port of the viewer on the host, 1025 to 65535. This is also the one egress allow rule (`localhost:<port>`): the sandbox can reach that port on your machine, so give it only the viewer's port. |
 | `capture` | `tools` | `none`: metadata only (tool calls appear as spans, but no command text or file paths). `tools`: also the full text of Bash commands and file paths. `full`: also prompts, responses and tool output. |
 | `metricIntervalMs` | `10000` | Metrics export interval (Claude's default is 60000). |
 | `extraResourceAttributes` | empty | Extra resource attributes, `key=value,key=value`, no spaces. |
@@ -150,6 +150,9 @@ Why these choices:
 - **`OTEL_RESOURCE_ATTRIBUTES` is replaced, not extended.** Add attributes with `extraResourceAttributes`.
 - **Viewer down is safe, but not free.** Claude runs normally and the export is dropped; nothing queues or errors. A one-shot `claude -p` was consistently about 2 seconds slower with the viewer down (mean 9.1s against 7.0s and 7.2s with it up, 5 runs each, 15 of 15 answered), most likely the exit-time flush waiting on the failed export. Interactive sessions and long runs were not measured.
 - **Kit settings are fixed at create.** To change `viewerPort`, `capture`, `accountIds` and so on, remove the sandbox and create a new one. The wrapper will not change them for an existing sandbox.
+- **Names are labels, not proof.** Anything running in the sandbox can change `sandbox.name` and `sandbox.id`. In a test, putting `OTEL_RESOURCE_ATTRIBUTES="sandbox.name=some-other-sandbox,..."` in front of one `claude -p` command made all of that run's spans, logs and metrics arrive under the other name. Code in a sandbox can also send OTLP straight to the viewer claiming any name, and the viewer does not authenticate. Use the names to find your own telemetry, not for audit or security decisions.
+- **What the kit opens on your machine.** One allow rule, for `localhost:<viewerPort>`, which is the viewer's OTLP receiver. That is a write path: a sandbox can add (or flood) telemetry. The viewer's query UI is on a different port that the kit does not open. Your own sbx policy can allow more than the kit asks for: on a machine with an allow-all policy, a sandbox could also reach the UI port (seen in testing).
+- **A run's spans may occasionally be missing.** In three early test runs (of about 60) a `claude -p` run's spans did not arrive while its logs and metrics did. It did not reproduce in 60 later runs, whether piped, back to back or spaced out, and the cause is unknown. If a trace is missing, that session's logs and metrics are still there (filter by `session.id`).
 - **Org policy.** If your organization governs sandbox network or filesystem policy, it can still block the allow rule or mounts. `sbx policy log my-sbx` shows what was blocked.
 - **Only the `claude` agent was tested.** `claude-bedrock` should behave the same but is untested.
 
@@ -160,6 +163,7 @@ The tests need `bash`, `curl` and `python3`; `e2e.sh` also needs `sbx`, a viewer
 ```
 tests/install.sh    # fast: installer and wrapper symlink handling, no sandboxes or API calls
 tests/wrapper.sh    # fast: the wrapper's decisions (create vs reattach, ports, warnings) against a fake sbx
+tests/kit.sh        # fast: the kit's argument patterns, checked exhaustively and against real `sbx kit validate`
 tests/e2e.sh        # full: real sandboxes and Claude calls
 ```
 

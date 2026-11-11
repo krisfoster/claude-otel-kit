@@ -118,7 +118,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-case "$PORT" in ''|*[!0-9]*) die "--port must be a number" ;; esac
+# The kit allows the sandbox to reach this host port, and --start-viewer uses PORT-1 for gRPC,
+# so keep to unprivileged ports and the same range as the kit's pattern.
+case "$PORT" in
+  ''|0*|*[!0-9]*) die "--port must be a number from 1025 to 65535, without leading zeros" ;;
+esac
+{ [ "${#PORT}" -le 5 ] && [ "$PORT" -ge 1025 ] && [ "$PORT" -le 65535 ]; } || die "--port must be a number from 1025 to 65535"
 case "$CAPTURE" in ''|none|tools|full) ;; *) die "--capture must be none, tools or full" ;; esac
 case "$START_WAIT" in ''|*[!0-9]*) die "CLAUDE_OTEL_START_WAIT must be a number of seconds" ;; esac
 
@@ -128,6 +133,16 @@ if [ "$STOP_VIEWER" = 1 ]; then
   stop_viewer || rc=$?
   exit "$rc"
 fi
+
+# Parsing stops at the first argument that is not ours, so one of ours after it would reach sbx and
+# fail there with a confusing "unknown flag". Say what is wrong instead.
+for arg in "$@"; do
+  case "$arg" in
+    --) break ;;
+    --port|--ui-port|--capture|--start-viewer|--db|--check|--stop-viewer|--port=*|--ui-port=*|--capture=*|--db=*)
+      die "'$arg' is a claude-otel option and must come before the sbx options (for example --name). Options that take a value are written '--port N', not '--port=N'. Try: claude-otel $arg ... --name NAME" ;;
+  esac
+done
 
 [ -f "$KIT_DIR/kit.yaml" ] || die "kit not found at $KIT_DIR (is bin/claude-otel still inside its repo?)"
 command -v sbx >/dev/null 2>&1 || [ "$CHECK_ONLY" = 1 ] || die "sbx not found on PATH"

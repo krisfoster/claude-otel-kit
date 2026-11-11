@@ -121,6 +121,8 @@ Findings 4 and 5 were fixed the same day: `claude-otel --stop-viewer` (verifies 
 
 Second review pass (findings 12 to 15, same day): the wrapper refuses sandboxes of another agent before touching them, cleans up and explains a failed `--start-viewer`, and the README and tests were tightened. `tests/wrapper.sh` is now 69 hermetic checks (mutation-tested); `tests/e2e.sh` adds real-sbx cases for both.
 
+Findings 6 to 8 (same day): the installer handles stale and foreign links safely (`tests/install.sh` 40 checks), `viewerPort` is exactly 1025 to 65535 in the kit and the wrapper (`tests/kit.sh` 30 checks, wrapper 116), and the README documents that sandbox names are forgeable (demonstrated) and what the kit opens on the host. Found along the way: options after sbx options now get a clear error (finding 16), and an unreproduced intermittent loss of spans (finding 17).
+
 ## Remaining work
 
 Done 2026-11-10: wrapper, e2e test, README, and the Bash-tool check (Claude's Bash tool sees all 10 `OTEL_*` variables, documented in the README under Known behaviour).
