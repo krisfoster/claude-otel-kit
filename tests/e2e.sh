@@ -212,7 +212,8 @@ check "a clash makes the start fail" test "$rc" != 0
 check "the viewer's real reason is shown" grep -q "address already in use" <<<"$w"
 check "it hints at --ui-port" grep -q -- "--ui-port" <<<"$w"
 check "no pid file is left behind" test ! -f "$sd/claude-otel/viewer-14400.pid"
-check "nothing is left listening on the clashing port" bash -c '! lsof -nP -iTCP:14400 -sTCP:LISTEN >/dev/null 2>&1'
+port_free() { ! (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }   # bash's own /dev/tcp: no lsof needed
+check "nothing is left listening on the clashing port" port_free 14400
 rm -rf "$sd"
 
 echo "== restart is idempotent"

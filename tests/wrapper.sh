@@ -191,6 +191,69 @@ for p in 1025 4318 65535; do
   check "--port $p is accepted"                   test "$RC" = 0
 done
 
+echo "== host platform: macOS and Linux are quiet, Windows is warned about"
+mkdir -p "$T/plat"
+cat >"$T/plat/uname" <<'EOF'
+#!/bin/sh
+case "$1" in
+  -r) echo "${FAKE_UNAME_R:-5.15.0-generic}" ;;
+  *)  echo "${FAKE_UNAME_S:?}" ;;
+esac
+EOF
+chmod +x "$T/plat/uname"
+plat_run() {  # SYSNAME [RELEASE] -> OUT, RC: --check with the fake viewer present and nothing listening
+  OUT="$(PATH="$T/plat:$T/bin:$PATH" FAKE_UNAME_S="$1" FAKE_UNAME_R="${2:-5.15.0-generic}" "$ROOT/bin/claude-otel" --check --port "$PORT_B" 2>&1)"
+  RC=$?
+}
+for os in Darwin Linux; do
+  plat_run "$os"
+  check "$os: no platform warning"                lacks "not currently supported" "$OUT"
+  check "$os: no 'unrecognised host' warning"     lacks "unrecognised host" "$OUT"
+  check "$os: the run completes normally"         test "$RC" = 0
+done
+plat_run Linux "5.15.153.1-microsoft-standard-WSL2"
+check "WSL: warns Windows is not supported"       has "WSL detected. Windows is not currently supported" "$OUT"
+check "WSL: warns but carries on"                 has "nothing is listening" "$OUT"
+check "WSL: does not refuse"                      test "$RC" = 0
+for os in MINGW64_NT-10.0-19045 MSYS_NT-10.0-22631 CYGWIN_NT-10.0-19045; do
+  plat_run "$os"
+  check "$os: warns Windows is not supported"     has "Windows is not currently supported ($os)" "$OUT"
+  check "$os: warns but carries on"               has "nothing is listening" "$OUT"
+  check "$os: does not refuse"                    test "$RC" = 0
+done
+plat_run FreeBSD
+check "an unknown OS is warned about"             has "unrecognised host 'FreeBSD'" "$OUT"
+
+echo "== the viewer install hint follows the OS"
+hint_run() {  # SYSNAME -> OUT: no viewer on PATH
+  OUT="$(PATH="$T/plat:/usr/bin:/bin" FAKE_UNAME_S="$1" "$ROOT/bin/claude-otel" --check 2>&1)"
+  RC=$?
+}
+hint_run Darwin
+check "macOS: suggests Homebrew"                  has "brew tap ctrlspice/otel-desktop-viewer" "$OUT"
+check "macOS: still links the viewer's README"    has "otel-desktop-viewer#installation" "$OUT"
+check "macOS: exits non-zero"                     test "$RC" != 0
+hint_run Linux
+check "Linux: does not suggest Homebrew"          lacks "brew" "$OUT"
+check "Linux: mentions apt and dnf"               has "apt (Debian, Ubuntu) or dnf (Fedora, RHEL)" "$OUT"
+check "Linux: states the glibc requirement"       has "glibc 2.39" "$OUT"
+check "Linux: links the viewer's README"          has "otel-desktop-viewer#installation" "$OUT"
+hint_run MINGW64_NT-10.0
+check "Windows: no Homebrew or apt advice, just the link" lacks "brew" "$OUT"
+check "Windows: links the viewer's README"        has "otel-desktop-viewer#installation" "$OUT"
+
+echo "== required host tools"
+mkdir -p "$T/min"
+ln -s "$(command -v dirname)" "$T/min/dirname"
+OUT="$(PATH="$T/min" "$BASH" "$ROOT/bin/claude-otel" --check 2>&1)"; RC=$?
+check "no curl: says so instead of 'nothing is listening'" has "'curl' is required" "$OUT"
+check "no curl: exits non-zero"                   test "$RC" != 0
+check "no curl: does not claim the viewer is down" lacks "nothing is listening" "$OUT"
+ln -s "$(command -v curl)" "$T/min/curl"
+OUT="$(PATH="$T/min" "$BASH" "$ROOT/bin/claude-otel" --check 2>&1)"; RC=$?
+check "no ps: says so"                            has "'ps' is required" "$OUT"
+check "--stop-viewer needs them too"              test "$(PATH="$T/min" "$BASH" "$ROOT/bin/claude-otel" --stop-viewer 2>&1 | grep -c "'ps' is required")" = 1
+
 echo "== edge cases"
 run_wrapper "old:$PORT_A" --port $PORT_A --name fresh2 .
 check "a different name creates a new sandbox"    has "--kit $ROOT/kit" "$CALLS"

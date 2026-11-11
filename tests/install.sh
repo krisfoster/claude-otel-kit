@@ -110,6 +110,48 @@ check "a real directory: even with --force"          fails "$ROOT/install.sh" --
 check "a real directory: uninstall --force refuses"  fails "$ROOT/install.sh" uninstall --bin-dir "$T/lnk4" --force
 check "the directory and its contents survive"       test "$(cat "$T/lnk4/claude-otel/data")" = precious
 
+echo "== host platform"
+mkdir -p "$T/plat"
+cat >"$T/plat/uname" <<'EOF'
+#!/bin/sh
+case "$1" in
+  -r) echo "${FAKE_UNAME_R:-5.15.0-generic}" ;;
+  *)  echo "${FAKE_UNAME_S:?}" ;;
+esac
+EOF
+chmod +x "$T/plat/uname"
+n=0
+inst() {  # SYSNAME [RELEASE] -> OUT, RC: install into a fresh dir with the viewer present
+  n=$((n + 1))
+  OUT="$(PATH="$T/plat:$PATH" FAKE_UNAME_S="$1" FAKE_UNAME_R="${2:-5.15.0-generic}" "$ROOT/install.sh" --bin-dir "$T/plat-bin-$n" 2>&1)"
+  RC=$?
+}
+for os in Darwin Linux; do
+  inst "$os"
+  check "$os: installs without a platform warning" bash -c '! grep -q "not currently supported\|unrecognised host" <<<"$0"' "$OUT"
+done
+inst Linux "5.15.153.1-microsoft-standard-WSL2"
+check "WSL: warns Windows is not supported"        grep -q "WSL detected. Windows is not currently supported" <<<"$OUT"
+check "WSL: installs anyway"                       test "$RC" = 0 -a -L "$T/plat-bin-$n/claude-otel"
+for os in MINGW64_NT-10.0-19045 MSYS_NT-10.0-22631 CYGWIN_NT-10.0-19045; do
+  inst "$os"
+  check "$os: warns Windows is not supported"      grep -q "Windows is not currently supported ($os)" <<<"$OUT"
+  check "$os: installs anyway"                     test "$RC" = 0 -a -L "$T/plat-bin-$n/claude-otel"
+done
+inst FreeBSD
+check "an unknown OS is warned about"              grep -q "unrecognised host 'FreeBSD'" <<<"$OUT"
+check "uninstall warns too"                        grep -q "Windows is not currently supported" <<<"$(PATH="$T/plat:$PATH" FAKE_UNAME_S=MINGW64_NT-10.0 "$ROOT/install.sh" uninstall --bin-dir "$T/plat-bin-1" 2>&1)"
+
+hint() {  # SYSNAME -> OUT: no viewer on PATH
+  n=$((n + 1))
+  OUT="$(PATH="$T/plat:/usr/bin:/bin" FAKE_UNAME_S="$1" "$ROOT/install.sh" --bin-dir "$T/plat-bin-$n" 2>&1)"
+}
+hint Darwin
+check "macOS: the note suggests Homebrew"          grep -q "brew tap ctrlspice/otel-desktop-viewer" <<<"$OUT"
+hint Linux
+check "Linux: no Homebrew, mentions apt, dnf and glibc" bash -c '! grep -q brew <<<"$0" && grep -q "apt and dnf" <<<"$0" && grep -q "glibc 2.39" <<<"$0"' "$OUT"
+check "Linux: links the viewer's README"           grep -q "otel-desktop-viewer#installation" <<<"$OUT"
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" = 0 ]

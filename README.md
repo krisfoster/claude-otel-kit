@@ -1,6 +1,6 @@
 # claude-otel: Claude Code OpenTelemetry for Docker Sandboxes
 
-A v3 kit for [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) (`sbx`). It turns on Claude Code's [OpenTelemetry export](https://code.claude.com/docs/en/monitoring-usage) (traces, metrics and logs) inside a `claude` sandbox and sends it to [otel-desktop-viewer](https://github.com/CtrlSpice/otel-desktop-viewer) running on your machine. Every signal carries the sandbox name and id, so you can tell which sandboxed Claude produced a trace.
+A v3 kit for [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) (`sbx`). It turns on Claude Code's [OpenTelemetry export](https://code.claude.com/docs/en/monitoring-usage) (traces, metrics and logs) inside a `claude` sandbox and sends it to [otel-desktop-viewer](https://github.com/CtrlSpice/otel-desktop-viewer) running on your machine. Every signal carries the sandbox name and id, so you can tell which sandboxed Claude produced a trace. It runs on macOS and Linux hosts; Windows is not currently supported (see *Supported platforms*).
 
 ```
 sandbox (claude)  --OTLP/HTTP-->  sbx proxy  -->  otel-desktop-viewer on your host (localhost:4318)
@@ -9,7 +9,7 @@ sandbox (claude)  --OTLP/HTTP-->  sbx proxy  -->  otel-desktop-viewer on your ho
 
 ## Quick start
 
-You need `sbx` (v0.51.0 or later, signed in) and [otel-desktop-viewer](https://github.com/CtrlSpice/otel-desktop-viewer) (`brew tap ctrlspice/otel-desktop-viewer && brew install --cask otel-desktop-viewer`).
+You need a macOS or Linux machine, `sbx` (v0.51.0 or later, signed in) and [otel-desktop-viewer](https://github.com/CtrlSpice/otel-desktop-viewer) (install commands for each OS are under *Prerequisites*).
 
 ```
 # 1. Get it and put the claude-otel command on your PATH
@@ -36,8 +36,8 @@ Run the same command again later to get back into that sandbox: when the name al
 
 ```
 # 3. Open the viewer in your browser (a second terminal is fine).
-#    `open` is macOS; elsewhere just visit the URL.
-open http://localhost:8000
+open http://localhost:8000          # macOS
+xdg-open http://localhost:8000      # Linux (or just visit the URL)
 ```
 
 Each prompt shows up as a trace (`claude_code.interaction`) with a span per model call and per tool call, plus matching logs and metrics. Every span, log and metric carries `sandbox.name=otel-demo` and a `sandbox.id`, which is how you match telemetry to the sandbox. To check from the terminal:
@@ -56,14 +56,26 @@ claude-otel --stop-viewer                             # stop the viewer the wrap
 
 The rest of this page covers installation options, the kit's arguments, and how it works.
 
+## Supported platforms
+
+claude-otel is for **macOS and Linux** hosts. **Windows is not currently supported.**
+
+| Host | Wrapper, installer and the fast tests | `sbx` and the kit, end to end |
+|---|---|---|
+| macOS (Apple Silicon) | Run here with the system bash 3.2 and with bash 5; also run in CI | Tested (sbx v0.51.0) |
+| Linux | Run on Ubuntu 24.04 (bash 5.2) in a container and in CI | Not tested: I have not run `sbx` on a Linux host |
+| Windows | Not supported | Not supported |
+
+On Windows (Git Bash, MSYS or Cygwin, and WSL) `claude-otel` and `install.sh` print a warning that Windows is not currently supported and then carry on, so expect failures rather than a clean refusal. Nothing here has been run on Windows. The kit itself (`kit/`) contains no host-specific code, so `sbx create claude --kit ./kit` is the part most likely to work, but that is untested too, and you would also need a viewer running and reachable on the OTLP port.
+
+The host scripts need `bash` 3.2 or newer, `curl`, a `ps` that supports `ps -p PID -o command=` (macOS, and procps on Linux), and the usual tools (`awk`, `grep`, `sed`, `seq`, `nohup`, `ln`, `readlink`). They are all present by default on macOS and mainstream Linux distributions; `claude-otel` checks for `curl` and `ps` and says so if one is missing. Minimal BusyBox-based systems such as Alpine are not supported.
+
 ## Prerequisites
 
 - `sbx` v0.51.0 or later, signed in. That is the release where the built-in agents (including `claude`) became published v3 kits ([release notes](https://docs.docker.com/ai/sandboxes/release-notes/)); the sbx docs say v3 kits cannot compose with older, non-v3 agents, so earlier versions are not expected to work with this kit (no earlier version was tried). Tested on v0.51.0.
-- otel-desktop-viewer on the host, with the `query` command (v0.7.0 has it). The kit cannot install it for you.
-  ```
-  brew tap ctrlspice/otel-desktop-viewer && brew install --cask otel-desktop-viewer
-  ```
-  Other install methods are in the [viewer README](https://github.com/CtrlSpice/otel-desktop-viewer#installation).
+- otel-desktop-viewer on the host, with the `query` command (v0.7.0 has it). The kit cannot install it for you. Install it for your OS:
+  - **macOS:** `brew tap ctrlspice/otel-desktop-viewer && brew install --cask otel-desktop-viewer`. The viewer's README lists a prebuilt binary for Apple Silicon only; on an Intel Mac you would build it with `go install` (Go 1.26, CGO).
+  - **Linux:** apt (Debian, Ubuntu) and dnf (Fedora, RHEL) repositories and release binaries for x86_64 and arm64 are available. The release binaries need glibc 2.39 or newer (Ubuntu 24.04+, Debian 13+, Fedora 40+). The exact commands are in the [viewer's README](https://github.com/CtrlSpice/otel-desktop-viewer#installation); check them before running, since they add a package repository.
 
 ## Install
 
@@ -211,7 +223,7 @@ Why these choices:
 
 ## Test
 
-The tests need `bash`, `curl` and `python3`; `e2e.sh` also needs `sbx`, a viewer with `query`, and a signed-in sbx. `e2e.sh` refuses to run if its ports (14318 and 18000) are already in use.
+The tests need `bash`, `curl` and `python3` on macOS or Linux; `e2e.sh` also needs `sbx`, a viewer with `query`, and a signed-in sbx. They use no `lsof` or other OS-specific tools. `e2e.sh` refuses to run if its ports (14318 and 18000) are already in use.
 
 ```
 tests/install.sh    # fast: installer and wrapper symlink handling, no sandboxes or API calls
@@ -222,6 +234,6 @@ tests/e2e.sh        # full: real sandboxes and Claude calls
 
 `e2e.sh` creates five sandboxes, starts its own viewer on ports 14318 and 18000 (it never touches one you already run), makes real Claude calls (a few cents), and checks the env, the sandbox name on spans, logs and metrics, restart behaviour, the wrapper reattaching or refusing a sandbox of another agent, a viewer port clash, identifiers, what each capture mode records (every cell of the table above), the viewer-down case, kit args (including rejection of bad values) and the policy log. It cleans up after itself.
 
-**CI.** `.github/workflows/ci.yml` runs `shellcheck` and the three fast suites on Ubuntu, for pushes to `main` and for pull requests, but only when `bin/`, `kit/`, `install.sh`, `tests/` or the workflow itself change (a README-only push does not run it). It is built to be cheap: one job, nothing to install or cache, a 3-minute cap, and a run that a newer push has made pointless is cancelled. The tests themselves take about 10 seconds. GitHub documents standard runners as free for public repositories; the workflow is kept small anyway in case that ever changes. `e2e.sh` is not in CI because it needs a real `sbx` and a Claude account, so run it by hand before a release.
+**CI.** `.github/workflows/ci.yml` runs on pushes to `main` and on pull requests, but only when `bin/`, `kit/`, `install.sh`, `tests/` or the workflow itself change (a README-only push does not run it). Two small jobs run side by side: Ubuntu runs `shellcheck` and the three fast suites, and macOS runs the same suites under the system bash 3.2, so both supported hosts are checked on every change. It is built to be cheap: nothing to install or cache, a 3-minute cap per job, and a run that a newer push has made pointless is cancelled. GitHub documents standard runners as free for public repositories; if this repo ever goes private, macOS minutes are billed at ten times the Linux rate, so delete the `macos` job to go back to Ubuntu only. `e2e.sh` is not in CI because it needs a real `sbx` and a Claude account, so run it by hand before a release.
 
 See [PLAN.md](PLAN.md) for the design, decisions and spike results.

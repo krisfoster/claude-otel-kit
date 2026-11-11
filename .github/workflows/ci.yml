@@ -1,8 +1,11 @@
 # Fast checks only: shellcheck and the three suites that need no sbx, no sandboxes and no API key.
 # tests/e2e.sh needs a real sbx and Claude, so it is run by hand (see README).
 #
-# Kept cheap on purpose: one Ubuntu job, nothing to install or cache, runs only when code or tests
-# change, cancels a run that a newer push has made pointless, and is capped at 3 minutes.
+# Kept cheap on purpose: two small jobs, nothing to install or cache, runs only when code or tests
+# change, cancels a run that a newer push has made pointless, and each job is capped at 3 minutes.
+# The macOS job exists because macOS and Linux are both supported hosts; it uses the system bash 3.2.
+# macOS minutes are billed at 10x on private repositories (free on public ones): delete that job if
+# this repository goes private and you want Ubuntu only.
 name: ci
 
 on:
@@ -41,6 +44,22 @@ jobs:
         run: shellcheck -S warning bin/claude-otel install.sh tests/*.sh
       - name: installer, kit arguments and wrapper
         run: |
+          tests/install.sh
+          tests/kit.sh
+          tests/wrapper.sh
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: installer, kit arguments and wrapper (system bash 3.2)
+        # /bin first on PATH makes `#!/usr/bin/env bash` pick the system bash 3.2, not a newer Homebrew one.
+        run: |
+          export PATH="/bin:$PATH"
+          bash --version | head -1
           tests/install.sh
           tests/kit.sh
           tests/wrapper.sh

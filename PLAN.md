@@ -1,6 +1,6 @@
 # Plan: Claude Code OpenTelemetry kit (v3) for Docker Sandboxes
 
-Status: built, verified and documented. Current suites: `tests/install.sh` (40 checks), `tests/kit.sh` (30), `tests/wrapper.sh` (116) and `tests/e2e.sh` (80, real sandboxes), plus a fast GitHub Actions workflow. Decisions below were approved on 2026-11-10 (all recommendations accepted); decision 3 was later changed to `none` (2026-11-12).
+Status: built, verified and documented. Current suites: `tests/install.sh` (55 checks), `tests/kit.sh` (30), `tests/wrapper.sh` (149) and `tests/e2e.sh` (about 80, real sandboxes), plus a fast GitHub Actions workflow on Ubuntu and macOS. Decisions below were approved on 2026-11-10 (all recommendations accepted); decision 3 was later changed to `none` (2026-11-12).
 
 ## Goal
 
@@ -48,7 +48,7 @@ Layout:
     kit/kit.yaml
     bin/claude-otel
     install.sh
-    .github/workflows/ci.yml   fast checks only (shellcheck + install, kit, wrapper suites), Ubuntu, 3 minute cap
+    .github/workflows/ci.yml   fast checks only: Ubuntu (shellcheck + the three suites) and macOS (the suites, system bash 3.2); 3 minute cap per job
     tests/install.sh           installer and wrapper symlink handling (hermetic)
     tests/kit.sh               kit argument patterns (exhaustive for the port; real `sbx kit validate` if available)
     tests/wrapper.sh           the wrapper's decisions against a fake sbx and a fake viewer (hermetic)
@@ -133,6 +133,8 @@ Finding 17 (missing spans) was investigated with a recording fake receiver and f
 Remaining-items round (2026-11-12): the e2e polls instead of sleeping; a GitHub Actions workflow runs shellcheck and the three fast suites on Ubuntu only when code or tests change (one job, no installs, 3 minute cap, concurrency cancel, actions pinned by SHA, linted with actionlint); the fast suites were verified on Ubuntu 24.04, which found and fixed a hidden dependence on an installed viewer.
 
 Decision 3 changed (2026-11-12): the default `capture` is now `none`. The owner chose this after the measurement showed `tools` records some secret shapes in clear text. `tools` and `full` stay available per sandbox.
+
+Platforms (2026-11-12): the host side targets macOS and Linux; Windows is not supported and gets a warning, not a refusal (native shells and WSL are both detected through `uname`). The wrapper and installer give OS-specific viewer install hints (Homebrew on macOS; apt, dnf and release binaries with the glibc 2.39 requirement on Linux), and the wrapper now checks for `curl` and `ps` instead of misreporting a missing `curl` as "nothing is listening". The e2e no longer needs `lsof`. Verified on macOS (bash 3.2 and 5) and Ubuntu 24.04. Not verified: `sbx` and the kit on a Linux host, and anything on Windows.
 
 ## Remaining work
 

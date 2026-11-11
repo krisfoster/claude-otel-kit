@@ -18,6 +18,22 @@ ACTION=install
 
 die() { echo "install.sh: $*" >&2; exit 1; }
 
+# Written for and tested on macOS and Linux. Windows (native shells or WSL) gets a warning, not a refusal.
+platform_check() {
+  local os rel
+  os="$(uname -s 2>/dev/null || true)"
+  rel="$(uname -r 2>/dev/null || true)"
+  case "$os" in
+    Darwin) ;;
+    Linux)
+      case "$rel" in
+        *[Mm]icrosoft*|*WSL*) echo "install.sh: warning: WSL detected. Windows is not currently supported, and nothing here has been tested under WSL; expect failures." >&2 ;;
+      esac ;;
+    MINGW*|MSYS*|CYGWIN*) echo "install.sh: warning: Windows is not currently supported ($os). claude-otel is a bash script written for macOS and Linux; expect failures." >&2 ;;
+    *) echo "install.sh: warning: unrecognised host '$os': written and tested for macOS and Linux only." >&2 ;;
+  esac
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     install|uninstall) ACTION="$1"; shift ;;
@@ -28,6 +44,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+platform_check
 LINK="$BIN_DIR/claude-otel"
 [ -f "$TARGET" ] || die "$TARGET not found"
 [ -f "$ROOT/kit/kit.yaml" ] || die "$ROOT/kit/kit.yaml not found"
@@ -79,8 +96,12 @@ case "$ACTION" in
     esac
     command -v sbx >/dev/null 2>&1 || echo "note: sbx not found on PATH; install Docker Sandboxes (v0.51.0 or later) first"
     if ! command -v otel-desktop-viewer >/dev/null 2>&1; then
-      echo "note: otel-desktop-viewer is not installed. Install it with:"
-      echo "  brew tap ctrlspice/otel-desktop-viewer && brew install --cask otel-desktop-viewer"
+      echo "note: otel-desktop-viewer is not installed."
+      case "$(uname -s 2>/dev/null || true)" in
+        Darwin) echo "  brew tap ctrlspice/otel-desktop-viewer && brew install --cask otel-desktop-viewer" ;;
+        Linux)  echo "  apt and dnf repositories and release binaries are available (release binaries need glibc 2.39 or newer)." ;;
+      esac
+      echo "  options and exact commands: https://github.com/CtrlSpice/otel-desktop-viewer#installation"
     fi
     echo "try: claude-otel --help"
     ;;

@@ -25,7 +25,6 @@ START_VIEWER=0
 CHECK_ONLY=0
 STOP_VIEWER=0
 START_WAIT="${CLAUDE_OTEL_START_WAIT:-15}"
-INSTALL_CMD='brew tap ctrlspice/otel-desktop-viewer && brew install --cask otel-desktop-viewer'
 
 usage() {
   cat <<EOF
@@ -55,6 +54,31 @@ EOF
 die() { echo "claude-otel: $*" >&2; exit 1; }
 warn() { echo "claude-otel: warning: $*" >&2; }
 say() { echo "claude-otel: $*" >&2; }
+
+# Written for and tested on macOS and Linux. Windows (native shells or WSL) gets a warning, not a refusal.
+platform_check() {
+  local os rel
+  os="$(uname -s 2>/dev/null || true)"
+  rel="$(uname -r 2>/dev/null || true)"
+  case "$os" in
+    Darwin) ;;
+    Linux)
+      case "$rel" in
+        *[Mm]icrosoft*|*WSL*) warn "WSL detected. Windows is not currently supported, and nothing here has been tested under WSL; expect failures." ;;
+      esac ;;
+    MINGW*|MSYS*|CYGWIN*) warn "Windows is not currently supported ($os). claude-otel is a bash script written for macOS and Linux; expect failures." ;;
+    *) warn "unrecognised host '$os': claude-otel is written and tested for macOS and Linux only." ;;
+  esac
+}
+
+viewer_install_help() {
+  echo "claude-otel: otel-desktop-viewer is not installed, so telemetry would have nowhere to go." >&2
+  case "$(uname -s 2>/dev/null || true)" in
+    Darwin) echo "Install it with:   brew tap ctrlspice/otel-desktop-viewer && brew install --cask otel-desktop-viewer" >&2 ;;
+    Linux)  echo "Install it from the project's apt (Debian, Ubuntu) or dnf (Fedora, RHEL) repository, or a release binary (x86_64 or arm64; needs glibc 2.39 or newer: Ubuntu 24.04+, Debian 13+, Fedora 40+)." >&2 ;;
+  esac
+  echo "Install options and exact commands: https://github.com/CtrlSpice/otel-desktop-viewer#installation" >&2
+}
 
 viewer_up() {
   curl -sf -m 2 -o /dev/null -X POST -H 'content-type: application/x-protobuf' \
@@ -128,6 +152,11 @@ esac
 case "$CAPTURE" in ''|none|tools|full) ;; *) die "--capture must be none, tools or full" ;; esac
 case "$START_WAIT" in ''|*[!0-9]*) die "CLAUDE_OTEL_START_WAIT must be a number of seconds" ;; esac
 
+platform_check
+for tool in curl ps; do
+  command -v "$tool" >/dev/null 2>&1 || die "'$tool' is required but was not found on PATH"
+done
+
 if [ "$STOP_VIEWER" = 1 ]; then
   [ $# -eq 0 ] || die "--stop-viewer takes no other arguments"
   rc=0
@@ -149,12 +178,7 @@ done
 command -v sbx >/dev/null 2>&1 || [ "$CHECK_ONLY" = 1 ] || die "sbx not found on PATH"
 
 if ! command -v otel-desktop-viewer >/dev/null 2>&1; then
-  {
-    echo "claude-otel: otel-desktop-viewer is not installed, so telemetry would have nowhere to go."
-    echo "Install it with:"
-    echo "  $INSTALL_CMD"
-    echo "See https://github.com/CtrlSpice/otel-desktop-viewer for other install methods."
-  } >&2
+  viewer_install_help
   exit 1
 fi
 
