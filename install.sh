@@ -50,7 +50,7 @@ case "$ACTION" in
       *) echo "note: $BIN_DIR is not on your PATH. Add this to your shell profile:"
          echo "  export PATH=\"$BIN_DIR:\$PATH\"" ;;
     esac
-    command -v sbx >/dev/null 2>&1 || echo "note: sbx not found on PATH; install Docker Sandboxes (v0.45 or later) first"
+    command -v sbx >/dev/null 2>&1 || echo "note: sbx not found on PATH; install Docker Sandboxes (v0.51.0 or later) first"
     if ! command -v otel-desktop-viewer >/dev/null 2>&1; then
       echo "note: otel-desktop-viewer is not installed. Install it with:"
       echo "  brew tap ctrlspice/otel-desktop-viewer && brew install --cask otel-desktop-viewer"

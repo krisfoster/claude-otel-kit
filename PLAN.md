@@ -35,11 +35,11 @@ One mixin, `kit/kit.yaml`, declaration only (no Dockerfile).
 2. `lifecycle@1` startup hook: idempotently adds a `source` line for env.sh to `/etc/sandbox-persistent.sh` (BASH_ENV, covers the agent launch) and `~/.bashrc` (covers a manual `claude` from `sbx exec -it`). A second background hook probes the viewer and writes a status file.
 3. `network-policy@1` runtime allow: `localhost:<port>` only.
 
-Args: `viewerPort` (default 4318), `capture` (`none|tools|full`, default `tools`), `metricIntervalMs`, `extraResourceAttributes`.
+Args: `viewerPort` (default 4318), `capture` (`none|tools|full`, default `tools`), `metricIntervalMs`, `extraResourceAttributes`, `accountIds` (default `false`, added after the 2026-11-10 review).
 
 Capture mapping: `none` = nothing; `tools` = `OTEL_LOG_TOOL_DETAILS=1`; `full` = also `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`, `OTEL_LOG_TOOL_CONTENT`.
 
-Host wrapper `bin/claude-otel` (kits cannot run host code): checks `otel-desktop-viewer` is installed (prints the brew install command and exits if not), checks the port is listening (warns, `--start-viewer` starts one the wrapper owns, optional `--db FILE` for persistence), then `exec sbx run claude --kit kit/ ...`.
+Host wrapper `bin/claude-otel` (kits cannot run host code): checks `otel-desktop-viewer` is installed (prints the brew install command and exits if not), checks the port is listening (warns, `--start-viewer` starts one the wrapper owns, optional `--db FILE` for persistence), then `exec sbx run claude --kit kit/ ...`. For a sandbox that already exists (`--name` matches `sbx ls`) it reattaches with plain `sbx run`, because sbx only accepts `--kit` at create; the sandbox's own port is read from its env.
 
 Install: `install.sh` symlinks `bin/claude-otel` into `~/.local/bin` (or `--bin-dir`), refuses to overwrite foreign files without `--force`, and `uninstall` only removes its own link. The wrapper resolves symlinks to find `kit/`. The kit needs no install.
 
@@ -50,6 +50,7 @@ Layout:
     install.sh
     tests/e2e.sh
     tests/install.sh
+    tests/wrapper.sh
     README.md
     PLAN.md
 
@@ -111,6 +112,12 @@ Setup: `sbx create claude --kit ./kit --name otel-spike1` (no workspace; the org
 - Sandbox names can be reused after deletion (`otel-spike1` was removed and recreated), so `sandbox.id` is what separates two sandboxes with the same name.
 - Side effect to document: the env file is sourced by every non-interactive bash in the sandbox (BASH_ENV), so other OpenTelemetry-instrumented programs run in the sandbox inherit the endpoint and exporter settings and would send to the viewer too, carrying the same `sandbox.*` attributes. Confirmed for Claude's own Bash tool (it sees all 10 `OTEL_*` variables). If this is unwanted, scope the vars to the `claude` process with a launcher wrapper (future option).
 - `sbx kit validate ./kit` created the shared `sbx-kit-builder` sandbox on first use.
+
+## Review follow-up (2026-11-11)
+
+Findings 1 to 3 of REVIEW.md were fixed: the wrapper reattaches to existing sandboxes (and, while testing it, a `set -e` exit when the sandbox had no kit was found and fixed); `accountIds` defaults to off; the README's sbx floor is now v0.51.0 (the release where built-in agents became v3 kits) and the viewer-down claim was replaced by a measurement (about 2s slower for `claude -p`, 5 runs per condition). New tests: `tests/wrapper.sh` (26 hermetic checks) and additions to `tests/e2e.sh`.
+
+Findings 4 and 5 were fixed the same day: `claude-otel --stop-viewer` (verifies the pid file's process is an `otel-desktop-viewer` started with that exact `--http` port before signalling, and otherwise only cleans up), and a README section on commands and secrets backed by a measurement of which secret shapes Claude Code masks. Tests: 25 more hermetic checks in `tests/wrapper.sh` (51 total) and 7 more in `tests/e2e.sh` (57 total).
 
 ## Remaining work
 

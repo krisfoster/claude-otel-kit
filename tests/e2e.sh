@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end test: two real sandboxes, a real viewer on private ports, a real Claude call.
-# Needs: sbx (v0.45+), otel-desktop-viewer with `query`, a signed-in sbx, and a few cents of API usage.
+# Needs: sbx (v0.51+), otel-desktop-viewer with `query`, a signed-in sbx, and a few cents of API usage.
 # Uses ports 14318 (OTLP/HTTP) and 18000 (UI) so it never touches a viewer you already run.
 set -uo pipefail
 
@@ -12,6 +12,7 @@ SUFFIX="$$"
 S1="otel-e2e-a-$SUFFIX"
 S2="otel-e2e-b-$SUFFIX"
 S3="otel-e2e-c-$SUFFIX"
+S4="otel-e2e-d-$SUFFIX"
 STATE="$(mktemp -d)"
 export XDG_STATE_HOME="$STATE"
 PASS=0
@@ -23,10 +24,8 @@ check() { local name="$1"; shift; if "$@"; then ok "$name"; else bad "$name"; fi
 quiet() { "$@" >/dev/null 2>&1; }
 
 cleanup() {
-  sbx rm --force "$S1" "$S2" "$S3" >/dev/null 2>&1
-  if [ -f "$STATE/claude-otel/viewer-$PORT.pid" ]; then
-    kill "$(cat "$STATE/claude-otel/viewer-$PORT.pid")" 2>/dev/null
-  fi
+  sbx rm --force "$S1" "$S2" "$S3" "$S4" >/dev/null 2>&1
+  "$ROOT/bin/claude-otel" --stop-viewer --port "$PORT" >/dev/null 2>&1
   rm -rf "$STATE"
 }
 trap cleanup EXIT
@@ -35,6 +34,21 @@ q() { otel-desktop-viewer query "$1" --endpoint "$UI" --json --limit 1000 2>/dev
 count_for() {  # table sandbox-name -> rows whose resource carries that sandbox.name
   q "SELECT count(*) FROM $1 WHERE resource.attributes.\"sandbox.name\"::VARCHAR = '$2'" |
     python3 -c 'import json,sys; print(json.load(sys.stdin)["rows"][0][0])' 2>/dev/null || echo 0
+}
+attr_rows() {  # table sandbox key -> rows for that sandbox whose attributes mention key
+  local filter="resource.attributes.\"sandbox.name\"::VARCHAR = '$2'"
+  [ "$1" = metric_series ] && filter="CAST(attributes AS VARCHAR) LIKE '%$2%'"
+  q "SELECT count(*) FROM $1 WHERE $filter AND CAST(attributes AS VARCHAR) LIKE '%$3%'" |
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["rows"][0][0])' 2>/dev/null || echo 0
+}
+qn() {  # run a count(*) query, print the number (0 on any failure)
+  q "$1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["rows"][0][0])' 2>/dev/null || echo 0
+}
+mark_rows() {  # sandbox -> span and log rows whose attributes, events or body contain $mark
+  local a b
+  a="$(qn "SELECT count(*) FROM spans WHERE resource.attributes.\"sandbox.name\"::VARCHAR = '$1' AND (CAST(attributes AS VARCHAR) LIKE '%$mark%' OR CAST(events AS VARCHAR) LIKE '%$mark%')")"
+  b="$(qn "SELECT count(*) FROM logs WHERE CAST(resource AS VARCHAR) LIKE '%$1%' AND (CAST(attributes AS VARCHAR) LIKE '%$mark%' OR CAST(body AS VARCHAR) LIKE '%$mark%')")"
+  echo $((a + b))
 }
 in_sbx() { sbx exec "$1" bash -c "$2" 2>&1; }
 
@@ -60,6 +74,7 @@ check "OTEL_RESOURCE_ATTRIBUTES has sandbox.name" grep -q "sandbox.name=$S1," <<
 check "OTEL_RESOURCE_ATTRIBUTES appears once" test "$(grep -c '^OTEL_RESOURCE_ATTRIBUTES=' <<<"$env_out")" = 1
 check "endpoint uses the configured port" grep -q "OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:$PORT" <<<"$env_out"
 check "traces enabled" grep -q '^CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1' <<<"$env_out"
+check "account ids are off by default" grep -q '^OTEL_METRICS_INCLUDE_ACCOUNT_UUID=false' <<<"$env_out"
 check "capture=tools default sets tool details" grep -q '^OTEL_LOG_TOOL_DETAILS=1' <<<"$env_out"
 check "capture=tools does not log prompts" bash -c '! grep -q "^OTEL_LOG_USER_PROMPTS" <<<"$0"' "$env_out"
 
@@ -71,11 +86,23 @@ check "capture=full logs prompts" grep -q '^OTEL_LOG_USER_PROMPTS=1' <<<"$env3"
 check "capture=full logs tool content" grep -q '^OTEL_LOG_TOOL_CONTENT=1' <<<"$env3"
 check "extra attributes are appended" grep -q "sandbox.name=$S3,.*,team.id=demo,env=test" <<<"$env3"
 
+echo "== kit args: capture=none and accountIds=true"
+check "create $S4" quiet sbx create claude --kit "$ROOT/kit" --kit-arg "viewerPort=$PORT" --kit-arg capture=none \
+  --kit-arg accountIds=true --name "$S4"
+env4="$(in_sbx "$S4" 'env')"
+check "capture=none sets no OTEL_LOG_* content flags" bash -c '! grep -q "^OTEL_LOG_" <<<"$0"' "$env4"
+check "accountIds=true is passed on" grep -q '^OTEL_METRICS_INCLUDE_ACCOUNT_UUID=true' <<<"$env4"
+check "an invalid accountIds is rejected" bash -c '! sbx kit validate "$0" --kit-arg accountIds=maybe >/dev/null 2>&1' "$ROOT/kit"
+check "an injected extraResourceAttributes is rejected" bash -c '! sbx kit validate "$0" --kit-arg "extraResourceAttributes=a=b\";id;\"" >/dev/null 2>&1' "$ROOT/kit"
+check "a non-numeric viewerPort is rejected" bash -c '! sbx kit validate "$0" --kit-arg viewerPort=4318\;id >/dev/null 2>&1' "$ROOT/kit"
+
 echo "== claude in each sandbox, viewer up"
 for n in "$S1" "$S2"; do
   out="$(in_sbx "$n" 'claude -p "Reply with exactly: ok" 2>&1 | tail -1')"
   grep -qx 'ok' <<<"$out" && ok "claude answers in $n" || bad "claude answers in $n ($out)"
 done
+out="$(in_sbx "$S4" 'claude -p "Reply with exactly: ok" 2>&1 | tail -1')"
+grep -qx 'ok' <<<"$out" && ok "claude answers in $S4" || bad "claude answers in $S4 ($out)"
 sleep 8
 
 echo "== sandbox name on every signal"
@@ -89,17 +116,50 @@ ids="$(q "SELECT count(DISTINCT resource.attributes.\"sandbox.id\"::VARCHAR) FRO
   python3 -c 'import json,sys; print(json.load(sys.stdin)["rows"][0][0])' 2>/dev/null || echo 0)"
 [ "${ids:-0}" -ge 2 ] && ok "two distinct sandbox.id values" || bad "two distinct sandbox.id values ($ids)"
 
+echo "== identifiers"
+for t in logs metric_series; do
+  check "$t: user.account_uuid absent by default" test "$(attr_rows "$t" "$S1" user.account_uuid)" = 0
+  check "$t: user.account_uuid present with accountIds=true" test "$(attr_rows "$t" "$S4" user.account_uuid)" -gt 0
+  check "$t: user.email still sent (cannot be turned off)" test "$(attr_rows "$t" "$S1" user.email)" -gt 0
+done
+
+echo "== command text in telemetry (capture=tools records it, capture=none does not)"
+mark="CMDMARK_$SUFFIX"
+for n in "$S1" "$S4"; do
+  in_sbx "$n" "claude -p --dangerously-skip-permissions 'Use the Bash tool to run exactly this command and nothing else: echo $mark' 2>&1 | tail -1" >/dev/null
+done
+sleep 8
+check "capture=tools: the command text is in telemetry" test "$(mark_rows "$S1")" -gt 0
+check "capture=none: the command text is nowhere in telemetry" test "$(mark_rows "$S4")" = 0
+check "capture=none: tool spans are still recorded" \
+  test "$(qn "SELECT count(*) FROM spans WHERE name = 'claude_code.tool' AND resource.attributes.\"sandbox.name\"::VARCHAR = '$S4'")" -gt 0
+
+echo "== wrapper reattaches to an existing sandbox"
+w="$("$ROOT/bin/claude-otel" --name "$S1" --detach 2>&1)"; rc=$?
+check "re-running the wrapper on an existing name succeeds" test "$rc" = 0
+check "it says it is reattaching" grep -q "exists; reattaching" <<<"$w"
+check "it does not hit sbx's --kit error" bash -c '! grep -q "already exists" <<<"$0"' "$w"
+check "it uses the sandbox's own port" grep -q "viewer listening on localhost:$PORT" <<<"$w"
+w="$("$ROOT/bin/claude-otel" --port 14999 --capture full --name "$S1" --detach 2>&1)"
+check "conflicting --port and --capture only warn" grep -q "ignoring --port 14999" <<<"$w"
+check "the capture change is called out" grep -q "capture is fixed when a sandbox is created" <<<"$w"
+
 echo "== restart is idempotent"
 sbx stop "$S1" >/dev/null 2>&1
 m="$(in_sbx "$S1" 'echo $(grep -c claude-otel-kit /etc/sandbox-persistent.sh) $(grep -c claude-otel-kit /home/agent/.bashrc)' | tail -1)"
 [ "$m" = "1 1" ] && ok "one marker line in each file after restart" || bad "marker lines after restart: '$m'"
 
 echo "== claude's own Bash tool"
-tool_out="$(in_sbx "$S2" 'claude -p --dangerously-skip-permissions "Run this exact shell command and print only its output: env | grep -c ^OTEL_" 2>&1 | tail -1')"
+tool_out="$(in_sbx "$S2" 'claude -p --dangerously-skip-permissions "Run this exact shell command and print only its output: env | grep -c ^OTEL_" 2>&1 | tail -1' | tail -1)"
 echo "  INFO  OTEL_ vars visible to Claude's Bash tool: ${tool_out:-?} (see README, Known behaviour)"
 
 echo "== viewer down"
-kill "$(cat "$STATE/claude-otel/viewer-$PORT.pid")" 2>/dev/null; sleep 1
+pidf="$STATE/claude-otel/viewer-$PORT.pid"
+vpid="$(cat "$pidf" 2>/dev/null)"
+check "--stop-viewer stops the viewer the wrapper started" quiet "$ROOT/bin/claude-otel" --stop-viewer --port "$PORT"
+check "the viewer process is gone" bash -c '! kill -0 "$0" 2>/dev/null' "$vpid"
+check "the pid file is gone" test ! -f "$pidf"
+check "nothing listens on the port any more" bash -c '! curl -sf -m2 -o /dev/null -X POST "http://localhost:$0/v1/traces"' "$PORT"
 out="$(in_sbx "$S2" 'claude -p "Reply with exactly: ok" 2>&1 | tail -1')"
 grep -qx 'ok' <<<"$out" && ok "claude still works with the viewer down" || bad "claude with viewer down ($out)"
 sbx stop "$S2" >/dev/null 2>&1

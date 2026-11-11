@@ -32,6 +32,13 @@ args:
         default: ""
         pattern: '^([A-Za-z0-9_.-]+=[A-Za-z0-9_.%-]+(,[A-Za-z0-9_.-]+=[A-Za-z0-9_.%-]+)*)?$'
         description: Extra resource attributes as key=value,key=value (no spaces; percent-encode specials)
+    accountIds:
+        default: "false"
+        enum: ["true", "false"]
+        description: >-
+            Include user.account_uuid and user.account_id in telemetry. Claude Code includes them
+            by default; this kit turns them off. user.email, user.id and organization.id are
+            always sent by Claude Code and cannot be turned off here.
 capabilities:
     - type: com.docker.sandbox/network-policy@1
       config:
@@ -57,6 +64,7 @@ capabilities:
                     export OTEL_METRIC_EXPORT_INTERVAL="${{ kit.args.metricIntervalMs }}"
                     export OTEL_LOGS_EXPORT_INTERVAL=2000
                     export OTEL_TRACES_EXPORT_INTERVAL=2000
+                    export OTEL_METRICS_INCLUDE_ACCOUNT_UUID="${{ kit.args.accountIds }}"
                     case "${{ kit.args.capture }}" in
                       tools)
                         export OTEL_LOG_TOOL_DETAILS=1 ;;

@@ -18,9 +18,12 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-otel"
 PORT=4318
 UI_PORT=8000
 CAPTURE=""
+PORT_SET=0
+CAPTURE_SET=0
 DB=""
 START_VIEWER=0
 CHECK_ONLY=0
+STOP_VIEWER=0
 INSTALL_CMD='brew tap ctrlspice/otel-desktop-viewer && brew install --cask otel-desktop-viewer'
 
 usage() {
@@ -33,23 +36,78 @@ Usage: claude-otel [options] [sbx run args...]
   --start-viewer       start otel-desktop-viewer if nothing is listening on --port
   --db FILE            with --start-viewer: persist telemetry to this DuckDB file
   --check              run the host checks only, do not call sbx
+  --stop-viewer        stop the viewer claude-otel started on --port, if it is still running
   -h, --help           show this help
 
 Options must come before sbx arguments. Use -- to end option parsing.
+
+Re-running with the name of an existing sandbox (--name NAME) reattaches to it.
+Kit settings (--port, --capture) are fixed when a sandbox is created, so for an
+existing sandbox the wrapper reads its port and ignores the others, with a warning.
 EOF
 }
 
 die() { echo "claude-otel: $*" >&2; exit 1; }
 warn() { echo "claude-otel: warning: $*" >&2; }
+say() { echo "claude-otel: $*" >&2; }
+
+viewer_up() {
+  curl -sf -m 2 -o /dev/null -X POST -H 'content-type: application/x-protobuf' \
+    --data-binary '' "http://localhost:$PORT/v1/traces"
+}
+
+# Stop the viewer this tool started, and only that one. The pid file can outlive the process
+# (reboot, crash), and the number may since belong to something unrelated, so the process is
+# checked to be an otel-desktop-viewer started with this port before anything is signalled.
+stop_viewer() {
+  local pidfile="$STATE_DIR/viewer-$PORT.pid" pid cmd i
+  if [ ! -f "$pidfile" ]; then
+    say "no viewer started by claude-otel on port $PORT (no $pidfile)"
+    if viewer_up; then
+      say "something is listening on localhost:$PORT, but claude-otel did not start it; leaving it alone"
+    fi
+    return 0
+  fi
+  pid="$(cat "$pidfile" 2>/dev/null || true)"
+  case "$pid" in
+    ''|*[!0-9]*) rm -f "$pidfile"; say "pid file was malformed; removed it, nothing stopped"; return 0 ;;
+  esac
+  cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  if [ -z "$cmd" ]; then
+    rm -f "$pidfile"
+    say "the viewer (pid $pid) is no longer running; removed the stale pid file"
+    return 0
+  fi
+  case "$cmd " in
+    *otel-desktop-viewer*"--http $PORT "*) ;;
+    *)
+      rm -f "$pidfile"
+      say "pid $pid is not the viewer claude-otel started on port $PORT, so the pid file was stale."
+      say "removed it and did not signal that process (it is: ${cmd:0:90})"
+      return 0 ;;
+  esac
+  kill "$pid" 2>/dev/null || true
+  for i in $(seq 1 20); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.25
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    warn "viewer (pid $pid) did not exit after SIGTERM; leaving the pid file in place"
+    return 1
+  fi
+  rm -f "$pidfile"
+  say "stopped the viewer (pid $pid) on port $PORT"
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --port)         PORT="${2:?--port needs a value}"; shift 2 ;;
+    --port)         PORT="${2:?--port needs a value}"; PORT_SET=1; shift 2 ;;
     --ui-port)      UI_PORT="${2:?--ui-port needs a value}"; shift 2 ;;
-    --capture)      CAPTURE="${2:?--capture needs a value}"; shift 2 ;;
+    --capture)      CAPTURE="${2:?--capture needs a value}"; CAPTURE_SET=1; shift 2 ;;
     --start-viewer) START_VIEWER=1; shift ;;
     --db)           DB="${2:?--db needs a value}"; shift 2 ;;
     --check)        CHECK_ONLY=1; shift ;;
+    --stop-viewer)  STOP_VIEWER=1; shift ;;
     -h|--help)      usage; exit 0 ;;
     --)             shift; break ;;
     *)              break ;;
@@ -58,6 +116,13 @@ done
 
 case "$PORT" in ''|*[!0-9]*) die "--port must be a number" ;; esac
 case "$CAPTURE" in ''|none|tools|full) ;; *) die "--capture must be none, tools or full" ;; esac
+
+if [ "$STOP_VIEWER" = 1 ]; then
+  [ $# -eq 0 ] || die "--stop-viewer takes no other arguments"
+  rc=0
+  stop_viewer || rc=$?
+  exit "$rc"
+fi
 
 [ -f "$KIT_DIR/kit.yaml" ] || die "kit not found at $KIT_DIR (is bin/claude-otel still inside its repo?)"
 command -v sbx >/dev/null 2>&1 || [ "$CHECK_ONLY" = 1 ] || die "sbx not found on PATH"
@@ -76,10 +141,43 @@ if ! otel-desktop-viewer --help 2>&1 | grep -qE '^[[:space:]]+query[[:space:]]';
   warn "this otel-desktop-viewer build has no 'query' command; the web UI works but the agent skill will not"
 fi
 
-viewer_up() {
-  curl -sf -m 2 -o /dev/null -X POST -H 'content-type: application/x-protobuf' \
-    --data-binary '' "http://localhost:$PORT/v1/traces"
+# The sandbox name, if one was given to sbx (before any --).
+NAME=""
+for ((i = 1; i <= $#; i++)); do
+  arg="${!i}"
+  case "$arg" in
+    --) break ;;
+    --name) j=$((i + 1)); NAME="${!j:-}" ;;
+    --name=*) NAME="${arg#--name=}" ;;
+  esac
+done
+
+sandbox_exists() { sbx ls --quiet 2>/dev/null | grep -qxF -- "$1"; }
+sandbox_port() {
+  sbx exec "$1" bash -c 'printf "%s" "$OTEL_EXPORTER_OTLP_ENDPOINT"' 2>/dev/null \
+    | grep -oE 'host\.docker\.internal:[0-9]+' | head -n 1 | cut -d: -f2
 }
+
+# Kit settings are fixed at create, so an existing sandbox keeps the port it was made with.
+EXISTING=0
+if [ "$CHECK_ONLY" = 0 ] && [ -n "$NAME" ] && sandbox_exists "$NAME"; then
+  EXISTING=1
+  sb_port="$(sandbox_port "$NAME" || true)"
+  if [ -z "$sb_port" ]; then
+    warn "sandbox '$NAME' was not created with the claude-otel kit, so it sends no telemetry."
+    warn "to fix that: sbx rm $NAME, then run claude-otel again"
+  else
+    if [ "$PORT_SET" = 1 ] && [ "$sb_port" != "$PORT" ]; then
+      warn "sandbox '$NAME' exports to port $sb_port (fixed when it was created); ignoring --port $PORT"
+    fi
+    PORT="$sb_port"
+  fi
+  if [ "$CAPTURE_SET" = 1 ]; then
+    warn "--capture is fixed when a sandbox is created; ignored for existing sandbox '$NAME'"
+    warn "to change it: sbx rm $NAME, then run claude-otel again"
+  fi
+  echo "claude-otel: sandbox '$NAME' exists; reattaching" >&2
+fi
 
 if viewer_up; then
   echo "claude-otel: viewer listening on localhost:$PORT" >&2
@@ -92,13 +190,18 @@ elif [ "$START_VIEWER" = 1 ]; then
   for _ in $(seq 1 30); do viewer_up && break; sleep 0.5; done
   viewer_up || die "started a viewer but it is not answering on localhost:$PORT; see $STATE_DIR/viewer-$PORT.log"
   echo "claude-otel: started viewer (pid $(cat "$STATE_DIR/viewer-$PORT.pid")), UI at http://localhost:$UI_PORT" >&2
-  echo "claude-otel: it keeps running after the sandbox exits; stop it with: kill \$(cat $STATE_DIR/viewer-$PORT.pid)" >&2
+  stop_hint="claude-otel --stop-viewer"
+  [ "$PORT" = 4318 ] || stop_hint="$stop_hint --port $PORT"
+  echo "claude-otel: it keeps running after the sandbox exits; stop it with: $stop_hint" >&2
 else
   warn "nothing is listening on localhost:$PORT. Telemetry will be dropped until a viewer is running."
   warn "start one with: otel-desktop-viewer   (or rerun with --start-viewer)"
 fi
 
 [ "$CHECK_ONLY" = 1 ] && exit 0
+
+# sbx refuses --kit for a sandbox that already exists.
+[ "$EXISTING" = 1 ] && exec sbx run claude "$@"
 
 kit_args=(--kit "$KIT_DIR" --kit-arg "viewerPort=$PORT")
 [ -n "$CAPTURE" ] && kit_args+=(--kit-arg "capture=$CAPTURE")
