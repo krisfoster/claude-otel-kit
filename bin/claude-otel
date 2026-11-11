@@ -24,6 +24,7 @@ DB=""
 START_VIEWER=0
 CHECK_ONLY=0
 STOP_VIEWER=0
+START_WAIT="${CLAUDE_OTEL_START_WAIT:-15}"
 INSTALL_CMD='brew tap ctrlspice/otel-desktop-viewer && brew install --cask otel-desktop-viewer'
 
 usage() {
@@ -40,6 +41,9 @@ Usage: claude-otel [options] [sbx run args...]
   -h, --help           show this help
 
 Options must come before sbx arguments. Use -- to end option parsing.
+
+Environment:
+  CLAUDE_OTEL_START_WAIT=SECONDS   how long --start-viewer waits for the viewer (default 15)
 
 Re-running with the name of an existing sandbox (--name NAME) reattaches to it.
 Kit settings (--port, --capture) are fixed when a sandbox is created, so for an
@@ -116,6 +120,7 @@ done
 
 case "$PORT" in ''|*[!0-9]*) die "--port must be a number" ;; esac
 case "$CAPTURE" in ''|none|tools|full) ;; *) die "--capture must be none, tools or full" ;; esac
+case "$START_WAIT" in ''|*[!0-9]*) die "CLAUDE_OTEL_START_WAIT must be a number of seconds" ;; esac
 
 if [ "$STOP_VIEWER" = 1 ]; then
   [ $# -eq 0 ] || die "--stop-viewer takes no other arguments"
@@ -152,7 +157,8 @@ for ((i = 1; i <= $#; i++)); do
   esac
 done
 
-sandbox_exists() { sbx ls --quiet 2>/dev/null | grep -qxF -- "$1"; }
+# Prints the agent of the sandbox with exactly this name, or nothing if there is no such sandbox.
+sandbox_agent() { sbx ls 2>/dev/null | awk -v n="$1" 'NR > 1 && $1 == n { print $2; exit }'; }
 sandbox_port() {
   sbx exec "$1" bash -c 'printf "%s" "$OTEL_EXPORTER_OTLP_ENDPOINT"' 2>/dev/null \
     | grep -oE 'host\.docker\.internal:[0-9]+' | head -n 1 | cut -d: -f2
@@ -160,7 +166,11 @@ sandbox_port() {
 
 # Kit settings are fixed at create, so an existing sandbox keeps the port it was made with.
 EXISTING=0
-if [ "$CHECK_ONLY" = 0 ] && [ -n "$NAME" ] && sandbox_exists "$NAME"; then
+agent=""
+[ "$CHECK_ONLY" = 0 ] && [ -n "$NAME" ] && agent="$(sandbox_agent "$NAME")"
+if [ -n "$agent" ]; then
+  # Decide before running anything inside the sandbox: that would start it if it were stopped.
+  [ "$agent" = claude ] || die "sandbox '$NAME' runs the '$agent' agent, and claude-otel only sets up claude sandboxes. Use another --name, or remove it first: sbx rm $NAME"
   EXISTING=1
   sb_port="$(sandbox_port "$NAME" || true)"
   if [ -z "$sb_port" ]; then
@@ -185,10 +195,27 @@ elif [ "$START_VIEWER" = 1 ]; then
   mkdir -p "$STATE_DIR"
   args=(--open-browser=false --http "$PORT" --grpc "$((PORT - 1))" --browser-port "$UI_PORT")
   [ -n "$DB" ] && args+=(--db "$DB")
-  nohup otel-desktop-viewer "${args[@]}" >"$STATE_DIR/viewer-$PORT.log" 2>&1 &
-  echo $! >"$STATE_DIR/viewer-$PORT.pid"
-  for _ in $(seq 1 30); do viewer_up && break; sleep 0.5; done
-  viewer_up || die "started a viewer but it is not answering on localhost:$PORT; see $STATE_DIR/viewer-$PORT.log"
+  log="$STATE_DIR/viewer-$PORT.log"
+  nohup otel-desktop-viewer "${args[@]}" >"$log" 2>&1 &
+  vpid=$!
+  echo "$vpid" >"$STATE_DIR/viewer-$PORT.pid"
+  for _ in $(seq 1 $((START_WAIT * 2))); do
+    viewer_up && break
+    kill -0 "$vpid" 2>/dev/null || break
+    sleep 0.5
+  done
+  if ! viewer_up; then
+    kill "$vpid" 2>/dev/null || true
+    rm -f "$STATE_DIR/viewer-$PORT.pid"
+    reason="$(grep -iE 'already in use|failed|error' "$log" 2>/dev/null | tail -n 1 | cut -c1-200 || true)"
+    [ -n "$reason" ] || reason="$(tail -n 1 "$log" 2>/dev/null | cut -c1-200 || true)"
+    say "the viewer did not start on localhost:$PORT. Last relevant line of its log ($log):"
+    say "  ${reason:-(no output)}"
+    case "$reason" in
+      *"already in use"*) say "a port is already taken (OTLP $PORT, gRPC $((PORT - 1)), UI $UI_PORT). Try --ui-port N or --port N." ;;
+    esac
+    exit 1
+  fi
   echo "claude-otel: started viewer (pid $(cat "$STATE_DIR/viewer-$PORT.pid")), UI at http://localhost:$UI_PORT" >&2
   stop_hint="claude-otel --stop-viewer"
   [ "$PORT" = 4318 ] || stop_hint="$stop_hint --port $PORT"

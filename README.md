@@ -50,7 +50,7 @@ The rest of this page covers installation options, the kit's arguments, and how 
 
 ## Prerequisites
 
-- `sbx` v0.51.0 or later, signed in. That is the release where the built-in agents (including `claude`) became published v3 kits ([release notes](https://docs.docker.com/ai/sandboxes/release-notes/)); v3 kits cannot compose with older, non-v3 agents, so earlier versions will not work with this kit. Tested on v0.51.0.
+- `sbx` v0.51.0 or later, signed in. That is the release where the built-in agents (including `claude`) became published v3 kits ([release notes](https://docs.docker.com/ai/sandboxes/release-notes/)); the sbx docs say v3 kits cannot compose with older, non-v3 agents, so earlier versions are not expected to work with this kit (no earlier version was tried). Tested on v0.51.0.
 - otel-desktop-viewer on the host, with the `query` command (v0.7.0 has it). The kit cannot install it for you.
   ```
   brew tap ctrlspice/otel-desktop-viewer && brew install --cask otel-desktop-viewer
@@ -92,7 +92,9 @@ Wrapper options: `--port N`, `--ui-port N`, `--capture none|tools|full`, `--star
 
 **Stopping the viewer.** `--start-viewer` leaves the viewer running after the sandbox exits, so it can keep collecting. Stop it with `claude-otel --stop-viewer` (add `--port N` if you started it on another port). It only stops a viewer that claude-otel itself started: it reads the recorded pid, checks that the process is really an `otel-desktop-viewer` started on that port, and only then sends it SIGTERM. A leftover pid file from a reboot or crash, even one whose number now belongs to an unrelated process, is cleaned up without signalling anything, and a viewer you started yourself is never touched.
 
-**Existing sandboxes.** `sbx` only accepts `--kit` when it creates a sandbox, and the kit's settings are fixed at that point. So when `--name` matches a sandbox that already exists, the wrapper reattaches with plain `sbx run` and reads the sandbox's own viewer port to check the host. If you also pass `--port` or `--capture` it warns that they are ignored (to change them, `sbx rm NAME` and run again), and if the sandbox was created without this kit it warns that it sends no telemetry.
+**If `--start-viewer` cannot start the viewer** (typically a port is already taken: the viewer uses the OTLP port, the next-lower port for gRPC, and a UI port, default 8000), the wrapper stops, prints the reason from the viewer's log, removes its pid file and does not leave a half-started viewer behind. Pass `--ui-port N` or `--port N` to move it. `CLAUDE_OTEL_START_WAIT=SECONDS` changes how long it waits for the viewer to answer (default 15).
+
+**Existing sandboxes.** `sbx` only accepts `--kit` when it creates a sandbox, and the kit's settings are fixed at that point. So when `--name` matches a sandbox that already exists, the wrapper reattaches with plain `sbx run` and reads the sandbox's own viewer port to check the host. If you also pass `--port` or `--capture` it warns that they are ignored (to change them, `sbx rm NAME` and run again), and if the sandbox was created without this kit it warns that it sends no telemetry. If `--name` belongs to a sandbox of another agent (for example `shell`), the wrapper refuses before touching it, because this kit only sets up `claude` sandboxes.
 
 ## Kit arguments
 
@@ -153,12 +155,14 @@ Why these choices:
 
 ## Test
 
+The tests need `bash`, `curl` and `python3`; `e2e.sh` also needs `sbx`, a viewer with `query`, and a signed-in sbx. `e2e.sh` refuses to run if its ports (14318 and 18000) are already in use.
+
 ```
 tests/install.sh    # fast: installer and wrapper symlink handling, no sandboxes or API calls
 tests/wrapper.sh    # fast: the wrapper's decisions (create vs reattach, ports, warnings) against a fake sbx
 tests/e2e.sh        # full: real sandboxes and Claude calls
 ```
 
-`e2e.sh` creates four sandboxes, starts its own viewer on ports 14318 and 18000 (it never touches one you already run), makes real Claude calls (a few cents), and checks the env, the sandbox name on spans, logs and metrics, restart behaviour, the wrapper reattaching, identifiers, the viewer-down case, kit args (including rejection of bad values) and the policy log. It cleans up after itself.
+`e2e.sh` creates five sandboxes, starts its own viewer on ports 14318 and 18000 (it never touches one you already run), makes real Claude calls (a few cents), and checks the env, the sandbox name on spans, logs and metrics, restart behaviour, the wrapper reattaching or refusing a sandbox of another agent, a viewer port clash, identifiers, the viewer-down case, kit args (including rejection of bad values) and the policy log. It cleans up after itself.
 
 See [PLAN.md](PLAN.md) for the design, decisions and spike results.

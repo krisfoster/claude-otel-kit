@@ -8,11 +8,17 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT=14318
 UI_PORT=18000
 UI="http://localhost:$UI_PORT"
+if curl -sf -m 1 -o /dev/null -X POST -H 'content-type: application/x-protobuf' --data-binary '' "http://localhost:$PORT/v1/traces" ||
+   curl -sf -m 1 -o /dev/null "$UI/"; then
+  echo "e2e: ports $PORT and $UI_PORT must be free; stop whatever is listening on them and rerun" >&2
+  exit 2
+fi
 SUFFIX="$$"
 S1="otel-e2e-a-$SUFFIX"
 S2="otel-e2e-b-$SUFFIX"
 S3="otel-e2e-c-$SUFFIX"
 S4="otel-e2e-d-$SUFFIX"
+S5="otel-e2e-e-$SUFFIX"
 STATE="$(mktemp -d)"
 export XDG_STATE_HOME="$STATE"
 PASS=0
@@ -24,7 +30,7 @@ check() { local name="$1"; shift; if "$@"; then ok "$name"; else bad "$name"; fi
 quiet() { "$@" >/dev/null 2>&1; }
 
 cleanup() {
-  sbx rm --force "$S1" "$S2" "$S3" "$S4" >/dev/null 2>&1
+  sbx rm --force "$S1" "$S2" "$S3" "$S4" "$S5" >/dev/null 2>&1
   "$ROOT/bin/claude-otel" --stop-viewer --port "$PORT" >/dev/null 2>&1
   rm -rf "$STATE"
 }
@@ -143,6 +149,23 @@ check "it uses the sandbox's own port" grep -q "viewer listening on localhost:$P
 w="$("$ROOT/bin/claude-otel" --port 14999 --capture full --name "$S1" --detach 2>&1)"
 check "conflicting --port and --capture only warn" grep -q "ignoring --port 14999" <<<"$w"
 check "the capture change is called out" grep -q "capture is fixed when a sandbox is created" <<<"$w"
+
+echo "== wrapper refuses a sandbox of another agent"
+check "create $S5 (shell agent)" quiet sbx create shell --name "$S5"
+w="$("$ROOT/bin/claude-otel" --name "$S5" --detach 2>&1)"; rc=$?
+check "refused with a non-zero exit" test "$rc" != 0
+check "names the agent it found" grep -q "runs the 'shell' agent" <<<"$w"
+check "does not claim to reattach" bash -c '! grep -q "reattaching" <<<"$0"' "$w"
+
+echo "== --start-viewer explains a port clash"
+sd="$(mktemp -d)"
+w="$(XDG_STATE_HOME="$sd" "$ROOT/bin/claude-otel" --check --start-viewer --port 14400 --ui-port "$UI_PORT" 2>&1)"; rc=$?
+check "a clash makes the start fail" test "$rc" != 0
+check "the viewer's real reason is shown" grep -q "address already in use" <<<"$w"
+check "it hints at --ui-port" grep -q -- "--ui-port" <<<"$w"
+check "no pid file is left behind" test ! -f "$sd/claude-otel/viewer-14400.pid"
+check "nothing is left listening on the clashing port" bash -c '! lsof -nP -iTCP:14400 -sTCP:LISTEN >/dev/null 2>&1'
+rm -rf "$sd"
 
 echo "== restart is idempotent"
 sbx stop "$S1" >/dev/null 2>&1

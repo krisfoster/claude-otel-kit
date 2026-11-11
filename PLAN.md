@@ -119,6 +119,8 @@ Findings 1 to 3 of REVIEW.md were fixed: the wrapper reattaches to existing sand
 
 Findings 4 and 5 were fixed the same day: `claude-otel --stop-viewer` (verifies the pid file's process is an `otel-desktop-viewer` started with that exact `--http` port before signalling, and otherwise only cleans up), and a README section on commands and secrets backed by a measurement of which secret shapes Claude Code masks. Tests: 25 more hermetic checks in `tests/wrapper.sh` (51 total) and 7 more in `tests/e2e.sh` (57 total).
 
+Second review pass (findings 12 to 15, same day): the wrapper refuses sandboxes of another agent before touching them, cleans up and explains a failed `--start-viewer`, and the README and tests were tightened. `tests/wrapper.sh` is now 69 hermetic checks (mutation-tested); `tests/e2e.sh` adds real-sbx cases for both.
+
 ## Remaining work
 
 Done 2026-11-10: wrapper, e2e test, README, and the Bash-tool check (Claude's Bash tool sees all 10 `OTEL_*` variables, documented in the README under Known behaviour).

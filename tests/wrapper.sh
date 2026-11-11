@@ -5,13 +5,18 @@ set -uo pipefail
 
 ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 T="$(mktemp -d)"
-PORT_A=14777   # where the fake viewer listens
-PORT_B=14778   # a port nothing listens on
+# Ports are picked free at run time so the test cannot collide with something already listening.
+free_port() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'; }
+PORT_A="$(free_port)"   # where the fake viewer listens
+PORT_B="$(free_port)"   # a port nothing listens on
+while [ "$PORT_B" = "$PORT_A" ]; do PORT_B="$(free_port)"; done
 SERVER_PID=""
 SPAWNED=""
 cleanup() {
   [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null
   for p in $SPAWNED; do kill -9 "$p" 2>/dev/null; done
+  # A viewer the wrapper itself started in the hung-start test, if the wrapper failed to kill it.
+  [ -s "$T/hung.pid" ] && kill -9 "$(cat "$T/hung.pid")" 2>/dev/null
   rm -rf "$T"
 }
 trap cleanup EXIT
@@ -24,23 +29,35 @@ has() { grep -qF -- "$1" <<<"$2"; }
 lacks() { ! grep -qF -- "$1" <<<"$2"; }
 
 mkdir -p "$T/bin"
-# Fake sbx. FAKE_SBX_EXISTING is "name:port" pairs; port "none" means created without the kit.
+# Fake sbx. FAKE_SBX_EXISTING is "name:port" or "name:port:agent" entries (agent defaults to claude);
+# port "none" means the sandbox was created without the kit. `ls` prints the real table shape.
 cat >"$T/bin/sbx" <<'EOF'
 #!/usr/bin/env bash
 echo "sbx $*" >>"$FAKE_SBX_LOG"
 case "$1" in
-  ls)   for e in $FAKE_SBX_EXISTING; do echo "${e%%:*}"; done ;;
+  ls)   echo "SANDBOX   AGENT   STATUS   PORTS   WORKSPACE"
+        for e in $FAKE_SBX_EXISTING; do
+          rest="${e#*:}"; agent="${rest#*:}"; [ "$agent" = "$rest" ] && agent=claude
+          echo "${e%%:*}   $agent   ● running (detached)      /some/path"
+        done ;;
   exec) for e in $FAKE_SBX_EXISTING; do
-          if [ "${e%%:*}" = "$2" ] && [ "${e#*:}" != none ]; then echo "http://host.docker.internal:${e#*:}"; fi
+          rest="${e#*:}"; port="${rest%%:*}"
+          if [ "${e%%:*}" = "$2" ] && [ "$port" != none ]; then echo "http://host.docker.internal:$port"; fi
         done ;;
   run)  : ;;
 esac
 EOF
-# Fake viewer: `--help` lists `query`; started with --http it stays alive like a real one.
+# Fake viewer: `--help` lists `query`; started with --http it stays alive like a real one (but never
+# listens), or with FAKE_VIEWER_FAIL it dies the way the real one does when a port is taken.
 cat >"$T/bin/otel-desktop-viewer" <<'EOF'
 #!/usr/bin/env bash
 case " $* " in
   *" --http "*)
+    if [ -n "${FAKE_VIEWER_FAIL:-}" ]; then
+      echo "run viewer: failed to start extensions: listen tcp 127.0.0.1:8000: bind: address already in use" >&2
+      exit 1
+    fi
+    [ -n "${FAKE_VIEWER_PID_FILE:-}" ] && echo $$ >"$FAKE_VIEWER_PID_FILE"
     [ -n "${FAKE_IGNORE_TERM:-}" ] && trap '' TERM
     while :; do sleep 1; done ;;
 esac
@@ -61,11 +78,12 @@ python3 "$T/server.py" "$PORT_A" >/dev/null 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 1 20); do curl -sf -m1 -o /dev/null -X POST "http://localhost:$PORT_A/" && break; sleep 0.25; done
 
-# run_wrapper "name:port ..." args...  ->  sets OUT (stderr+stdout) and CALLS (what sbx was asked)
+# run_wrapper "name:port ..." args...  ->  sets OUT (stderr+stdout), RC and CALLS (what sbx was asked)
 run_wrapper() {
   local existing="$1"; shift
   : >"$T/calls"
   OUT="$(PATH="$T/bin:$PATH" FAKE_SBX_LOG="$T/calls" FAKE_SBX_EXISTING="$existing" "$ROOT/bin/claude-otel" "$@" 2>&1)"
+  RC=$?
   CALLS="$(cat "$T/calls")"
 }
 
@@ -107,6 +125,43 @@ echo "== existing sandbox made without the kit"
 run_wrapper "plain:none" --port $PORT_A --name plain
 check "warns it sends no telemetry"               has "was not created with the claude-otel kit" "$OUT"
 check "still reattaches"                          has "sbx run claude --name plain" "$CALLS"
+
+echo "== existing sandbox of a different agent"
+run_wrapper "shellbox:none:shell" --port $PORT_A --name shellbox --detach
+check "refuses, with a non-zero exit"             test "$RC" != 0
+check "names the agent it found"                  has "runs the 'shell' agent" "$OUT"
+check "suggests another name or sbx rm"           has "sbx rm shellbox" "$OUT"
+check "does not claim to reattach"                lacks "reattaching" "$OUT"
+check "does not run anything inside it"           lacks "sbx exec" "$CALLS"
+check "does not try sbx run"                      lacks "sbx run" "$CALLS"
+run_wrapper "poc:$PORT_A:claude-desktop-poc" --port $PORT_A --name poc --detach
+check "the agent must be exactly claude"          has "runs the 'claude-desktop-poc' agent" "$OUT"
+run_wrapper "mine:$PORT_A:claude" --port $PORT_A --name mine --detach
+check "a claude sandbox is still reattached"      has "sandbox 'mine' exists; reattaching" "$OUT"
+
+echo "== --start-viewer when the viewer cannot start"
+run_start() {  # PORT [env assignments...] -> OUT, RC; state in its own directory
+  local port="$1"; shift
+  rm -rf "$T/state2"; mkdir -p "$T/state2"
+  OUT="$(env PATH="$T/bin:$PATH" XDG_STATE_HOME="$T/state2" "$@" \
+    "$ROOT/bin/claude-otel" --check --start-viewer --port "$port" --ui-port 8000 2>&1)"
+  RC=$?
+}
+run_start 14810 FAKE_VIEWER_FAIL=1
+check "a viewer that dies: non-zero exit"         test "$RC" != 0
+check "shows the real reason from its log"        has "address already in use" "$OUT"
+check "hints at --ui-port"                        has "--ui-port" "$OUT"
+check "leaves no pid file behind"                 test ! -f "$T/state2/claude-otel/viewer-14810.pid"
+rm -f "$T/hung.pid"
+run_start 14811 CLAUDE_OTEL_START_WAIT=1 FAKE_VIEWER_PID_FILE="$T/hung.pid"
+sleep 0.5
+check "a viewer that never answers: non-zero exit" test "$RC" != 0
+check "says it did not start"                     has "did not start on localhost:14811" "$OUT"
+check "leaves no pid file behind (hung case)"     test ! -f "$T/state2/claude-otel/viewer-14811.pid"
+check "fixture: the fake viewer did start"        test -s "$T/hung.pid"
+check "kills the viewer it started (hung case)"   bash -c '! kill -0 "$(cat "$0")" 2>/dev/null' "$T/hung.pid"
+run_start 14812 CLAUDE_OTEL_START_WAIT=abc
+check "a bad CLAUDE_OTEL_START_WAIT is rejected"  has "CLAUDE_OTEL_START_WAIT must be a number" "$OUT"
 
 echo "== edge cases"
 run_wrapper "old:$PORT_A" --port $PORT_A --name fresh2 .
