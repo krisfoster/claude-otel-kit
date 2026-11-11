@@ -154,12 +154,16 @@ check "hints at --ui-port"                        has "--ui-port" "$OUT"
 check "leaves no pid file behind"                 test ! -f "$T/state2/claude-otel/viewer-14810.pid"
 rm -f "$T/hung.pid"
 run_start 14811 CLAUDE_OTEL_START_WAIT=1 FAKE_VIEWER_PID_FILE="$T/hung.pid"
-sleep 0.5
 check "a viewer that never answers: non-zero exit" test "$RC" != 0
 check "says it did not start"                     has "did not start on localhost:14811" "$OUT"
 check "leaves no pid file behind (hung case)"     test ! -f "$T/state2/claude-otel/viewer-14811.pid"
 check "fixture: the fake viewer did start"        test -s "$T/hung.pid"
-check "kills the viewer it started (hung case)"   bash -c '! kill -0 "$(cat "$0")" 2>/dev/null' "$T/hung.pid"
+pid_gone() {  # the pid in file $1 is not running (allow a moment for the kill to land)
+  local _
+  for _ in $(seq 1 20); do kill -0 "$(cat "$1")" 2>/dev/null || return 0; sleep 0.25; done
+  return 1
+}
+check "kills the viewer it started (hung case)"   pid_gone "$T/hung.pid"
 run_start 14812 CLAUDE_OTEL_START_WAIT=abc
 check "a bad CLAUDE_OTEL_START_WAIT is rejected"  has "CLAUDE_OTEL_START_WAIT must be a number" "$OUT"
 
@@ -214,7 +218,11 @@ spawn_viewer() {
     >/dev/null 2>&1 &
   VPID=$!
   SPAWNED="$SPAWNED $VPID"
-  sleep 0.3
+  # Wait until the process has exec'd the fake viewer (before that `ps` shows this shell's own command).
+  for _ in $(seq 1 40); do
+    case "$(ps -p "$VPID" -o command= 2>/dev/null)" in *otel-desktop-viewer*) break ;; esac
+    sleep 0.1
+  done
 }
 
 spawn_viewer 14790

@@ -1,6 +1,6 @@
 # Plan: Claude Code OpenTelemetry kit (v3) for Docker Sandboxes
 
-Status: built and verified. `kit/kit.yaml`, `bin/claude-otel`, `install.sh`, `tests/install.sh` (16 checks), `tests/e2e.sh` (30 checks) and `README.md` are done. Decisions below were approved on 2026-11-10 (all recommendations accepted).
+Status: built, verified and documented. Current suites: `tests/install.sh` (40 checks), `tests/kit.sh` (30), `tests/wrapper.sh` (116) and `tests/e2e.sh` (80, real sandboxes), plus a fast GitHub Actions workflow. Decisions below were approved on 2026-11-10 (all recommendations accepted); decision 3 was later changed to `none` (2026-11-12).
 
 ## Goal
 
@@ -35,9 +35,9 @@ One mixin, `kit/kit.yaml`, declaration only (no Dockerfile).
 2. `lifecycle@1` startup hook: idempotently adds a `source` line for env.sh to `/etc/sandbox-persistent.sh` (BASH_ENV, covers the agent launch) and `~/.bashrc` (covers a manual `claude` from `sbx exec -it`). A second background hook probes the viewer and writes a status file.
 3. `network-policy@1` runtime allow: `localhost:<port>` only.
 
-Args: `viewerPort` (default 4318), `capture` (`none|tools|full`, default `tools`), `metricIntervalMs`, `extraResourceAttributes`, `accountIds` (default `false`, added after the 2026-11-10 review).
+Args: `viewerPort` (default 4318), `capture` (`none|tools|full`, default `none`), `metricIntervalMs`, `extraResourceAttributes`, `accountIds` (default `false`, added after the 2026-11-10 review).
 
-Capture mapping: `none` = nothing; `tools` = `OTEL_LOG_TOOL_DETAILS=1`; `full` = also `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`, `OTEL_LOG_TOOL_CONTENT`.
+Capture mapping: `none` = nothing (the default); `tools` = `OTEL_LOG_TOOL_DETAILS=1`; `full` = also `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`, `OTEL_LOG_TOOL_CONTENT`. What each mode actually records, and where it appears, was measured (2026-11-12) and is tabulated in the README; `tests/e2e.sh` checks every cell of that table.
 
 Host wrapper `bin/claude-otel` (kits cannot run host code): checks `otel-desktop-viewer` is installed (prints the brew install command and exits if not), checks the port is listening (warns, `--start-viewer` starts one the wrapper owns, optional `--db FILE` for persistence), then `exec sbx run claude --kit kit/ ...`. For a sandbox that already exists (`--name` matches `sbx ls`) it reattaches with plain `sbx run`, because sbx only accepts `--kit` at create; the sandbox's own port is read from its env.
 
@@ -48,11 +48,14 @@ Layout:
     kit/kit.yaml
     bin/claude-otel
     install.sh
-    tests/e2e.sh
-    tests/install.sh
-    tests/wrapper.sh
-    README.md
-    PLAN.md
+    .github/workflows/ci.yml   fast checks only (shellcheck + install, kit, wrapper suites), Ubuntu, 3 minute cap
+    tests/install.sh           installer and wrapper symlink handling (hermetic)
+    tests/kit.sh               kit argument patterns (exhaustive for the port; real `sbx kit validate` if available)
+    tests/wrapper.sh           the wrapper's decisions against a fake sbx and a fake viewer (hermetic)
+    tests/e2e.sh               real sandboxes and Claude calls, run by hand
+    README.md                  usage, capture modes and how to read captured text, known behaviour
+    PLAN.md                    this file
+    REVIEW.md                  the adversarial review, its fixes and the open observation (finding 17)
 
 ## Decisions (approved)
 
@@ -60,7 +63,7 @@ Layout:
 |---|---|---|
 | 1 | Env delivery | BASH_ENV file (not managed-settings drop-in: that runs as root, locks the endpoint, and a malformed file stops Claude starting) |
 | 2 | Transport | `http/protobuf` on 4318 (not gRPC) |
-| 3 | Content capture default | `tools`; `full` is opt-in |
+| 3 | Content capture default | `none` (changed 2026-11-12 from `tools`, after measuring that `tools` records unmasked secrets); `tools` and `full` are opt-in |
 | 4 | Identity | Resource attributes `sandbox.name` and `sandbox.id`; keep `service.name=claude-code`. Revisit if the viewer UI does not show resource attributes in trace lists. |
 | 5 | Viewer-missing warning | Host wrapper plus best-effort in-sandbox probe |
 | 6 | Kit location | `kit/` subdirectory |
@@ -70,10 +73,12 @@ Assumed: `claude` agent only (`claude-bedrock` untested), local directory use, n
 
 ## Risks
 
-- Whether Claude's OTLP exporter honours `HTTPS_PROXY` (Claude docs are silent). Fallback: `NODE_USE_ENV_PROXY=1`. Gate for everything else, hence spike 1.
-- Allow-rule form and necessity cannot be proven on an Allow_All org policy.
-- Startup hook must finish before Claude launches.
-- gRPC through the sandbox proxy is unproven; not used.
+Original risks, and how they turned out:
+
+- Whether Claude's OTLP exporter honours `HTTPS_PROXY`: **resolved**, it works (spike 1); `NODE_USE_ENV_PROXY` was not needed.
+- Startup hook must finish before Claude launches: **resolved**, the env reached the agent in every run.
+- Allow-rule form and necessity cannot be proven on an Allow_All org policy: **still open** (the form `localhost:<port>` matches what the sbx policy log records).
+- gRPC through the sandbox proxy is unproven; not used: **still true**.
 
 ## Verification
 
@@ -110,7 +115,7 @@ Setup: `sbx create claude --kit ./kit --name otel-spike1` (no workspace; the org
 
 - The built-in `claude` agent is itself a v3 kit (`docker.io/sbx/claude`), which is why a v3 mixin composes with it.
 - Sandbox names can be reused after deletion (`otel-spike1` was removed and recreated), so `sandbox.id` is what separates two sandboxes with the same name.
-- Side effect to document: the env file is sourced by every non-interactive bash in the sandbox (BASH_ENV), so other OpenTelemetry-instrumented programs run in the sandbox inherit the endpoint and exporter settings and would send to the viewer too, carrying the same `sandbox.*` attributes. Confirmed for Claude's own Bash tool (it sees all 10 `OTEL_*` variables). If this is unwanted, scope the vars to the `claude` process with a launcher wrapper (future option).
+- Side effect to document: the env file is sourced by every non-interactive bash in the sandbox (BASH_ENV), so other OpenTelemetry-instrumented programs run in the sandbox inherit the endpoint and exporter settings and would send to the viewer too, carrying the same `sandbox.*` attributes. Confirmed for Claude's own Bash tool (it sees the `OTEL_*` variables (10 at the time of this spike; the count has since changed)). If this is unwanted, scope the vars to the `claude` process with a launcher wrapper (future option).
 - `sbx kit validate ./kit` created the shared `sbx-kit-builder` sandbox on first use.
 
 ## Review follow-up (2026-11-11)
@@ -123,9 +128,15 @@ Second review pass (findings 12 to 15, same day): the wrapper refuses sandboxes 
 
 Findings 6 to 8 (same day): the installer handles stale and foreign links safely (`tests/install.sh` 40 checks), `viewerPort` is exactly 1025 to 65535 in the kit and the wrapper (`tests/kit.sh` 30 checks, wrapper 116), and the README documents that sandbox names are forgeable (demonstrated) and what the kit opens on the host. Found along the way: options after sbx options now get a clear error (finding 16), and an unreproduced intermittent loss of spans (finding 17).
 
+Finding 17 (missing spans) was investigated with a recording fake receiver and fault injection: slow receivers, failed exports, concurrency and a long-lived streaming session were all ruled out, the cause of the viewer-down delay was found (Claude retries failed exports about three times at exit), and the original episodes remain unexplained. Details in REVIEW.md.
+
+Remaining-items round (2026-11-12): the e2e polls instead of sleeping; a GitHub Actions workflow runs shellcheck and the three fast suites on Ubuntu only when code or tests change (one job, no installs, 3 minute cap, concurrency cancel, actions pinned by SHA, linted with actionlint); the fast suites were verified on Ubuntu 24.04, which found and fixed a hidden dependence on an installed viewer.
+
+Decision 3 changed (2026-11-12): the default `capture` is now `none`. The owner chose this after the measurement showed `tools` records some secret shapes in clear text. `tools` and `full` stay available per sandbox.
+
 ## Remaining work
 
-Done 2026-11-10: wrapper, e2e test, README, and the Bash-tool check (Claude's Bash tool sees all 10 `OTEL_*` variables, documented in the README under Known behaviour).
+Done: wrapper, installer, four test suites, CI, README (including the capture modes and how to read captured prompts, replies, commands and tool output, every example run as written), and the Bash-tool check (Claude's Bash tool sees the `OTEL_*` variables, documented in the README under Known behaviour).
 
 Open, optional:
 - Prove the `localhost:<port>` allow rule is required, on a machine with a restrictive (non-Allow_All) policy.

@@ -24,6 +24,14 @@ claude-otel --start-viewer --name otel-demo .
 
 Claude opens in the sandbox. Send it a prompt, for example `list the files in this repo and summarise them`.
 
+By default the kit records metadata only: no prompts, no replies, no command text. To see more in your traces, pick a capture mode when you first create the sandbox: `--capture tools` adds the commands Claude runs and file paths, and `--capture full` adds your prompts, Claude's replies and tool output. For example:
+
+```
+claude-otel --start-viewer --capture full --name otel-demo .
+```
+
+See *Capturing prompts, commands and output* below for exactly what each mode records, where to read it in the viewer, and what it means for secrets.
+
 Run the same command again later to get back into that sandbox: when the name already exists, the wrapper reattaches instead of creating it. Pass `--name` so it knows which sandbox you mean.
 
 ```
@@ -103,16 +111,61 @@ Pass with `--kit-arg name=value` (the wrapper sets `viewerPort` and `capture` fo
 | Arg | Default | Meaning |
 |---|---|---|
 | `viewerPort` | `4318` | OTLP/HTTP port of the viewer on the host, 1025 to 65535. This is also the one egress allow rule (`localhost:<port>`): the sandbox can reach that port on your machine, so give it only the viewer's port. |
-| `capture` | `tools` | `none`: metadata only (tool calls appear as spans, but no command text or file paths). `tools`: also the full text of Bash commands and file paths. `full`: also prompts, responses and tool output. |
+| `capture` | `none` | What content goes into telemetry: `none` (metadata only), `tools` (adds command text and file paths) or `full` (adds your prompts, Claude's replies and tool output). Details, and how to read it back, in *Capturing prompts, commands and output* below. |
 | `metricIntervalMs` | `10000` | Metrics export interval (Claude's default is 60000). |
 | `extraResourceAttributes` | empty | Extra resource attributes, `key=value,key=value`, no spaces. |
 | `accountIds` | `false` | Include `user.account_uuid` and `user.account_id`. Claude Code sends them by default; the kit turns them off. |
 
-`capture=full` puts your prompts and file contents into telemetry. It stays on your machine, but treat the viewer's data accordingly.
-
-**Commands and secrets.** With the default `capture=tools`, the full text of every Bash command Claude runs is recorded. Claude Code masks values it recognises as secrets, but that is pattern matching, not a guarantee. In a test with made-up values (Claude Code 2.1.322, one command per shape), these were masked or absent from telemetry: `export DB_PASSWORD=...`, `API_TOKEN=...`, `AWS_SECRET_ACCESS_KEY=...`, an `Authorization: Bearer ...` header, and a GitHub `ghp_...` token. These were recorded in clear text: a password inside a URL (`postgres://user:password@host/db`), an `sk-ant-...`-style key passed as a bare argument, and a password written in ordinary words. So do not rely on masking. If commands may contain secrets, use `capture=none`: the same test found no command text anywhere in telemetry, while the tool spans were still recorded. `--db` writes whatever was captured to disk.
-
 **Identifiers.** Claude Code attaches who you are to every span, log and metric. By default the kit removes `user.account_uuid` and `user.account_id` (`accountIds=false`), but `user.email`, `user.id` and `organization.id` are always sent and the kit cannot turn them off. They go to your local viewer only, but with `--db` they are written to disk, so treat that file as personal data.
+
+## Capturing prompts, commands and output
+
+By default (`capture=none`) the kit records metadata only: every model call and tool call is a span with its name, timing, token counts and cost, but no text. To record more, choose a mode when you create the sandbox:
+
+```
+claude-otel --start-viewer --capture tools --name my-sbx .   # adds commands and file paths
+claude-otel --start-viewer --capture full  --name my-sbx .   # adds prompts, replies and tool output
+
+# without the wrapper
+sbx create claude --kit ./kit --kit-arg capture=full --name my-sbx .
+```
+
+The mode is fixed when the sandbox is created. To change it, `sbx rm my-sbx` and create it again (if you pass `--capture` for a sandbox that already exists, the wrapper warns that it is ignored). The modes are bundles of Claude Code's own switches: `tools` sets `OTEL_LOG_TOOL_DETAILS=1`, and `full` also sets `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES` and `OTEL_LOG_TOOL_CONTENT`. The kit does not offer the switches one at a time, and never turns on raw API request and response bodies (`OTEL_LOG_RAW_API_BODIES`).
+
+**What each mode records.** Tested with Claude Code 2.1.322 by running the same prompt in each mode and searching the viewer for text that could only have come from one source:
+
+| | `none` | `tools` | `full` |
+|---|---|---|---|
+| Model calls and tool calls as spans (names, timing, tokens, cost) | yes | yes | yes |
+| Text of Bash commands | no | yes | yes |
+| File paths (Read, Edit, Write) | no | yes | yes |
+| Your prompts | no | no | yes |
+| Claude's replies | no | no | yes |
+| Tool output (what a command printed, the text of a file Claude read) | no | no | yes |
+
+Under `none` and `tools` the prompt and reply fields still exist but hold the literal text `<REDACTED>` next to a length (`prompt_length`, `response_length`), so a `<REDACTED>` in the viewer means capture is off, not that something went wrong.
+
+**Where to read it in the viewer.**
+
+- Your prompts: the `claude_code.user_prompt` log, attributes `prompt` and `prompt_text`; also the `claude_code.interaction` span, attribute `user_prompt`.
+- Claude's replies: the `claude_code.assistant_response` log, attribute `response`.
+- Commands: the `claude_code.tool` span, attribute `full_command` (also the `tool_input` and `tool_parameters` log attributes). File paths: the same span, attribute `file_path`.
+- Tool output: the `tool.output` event on the `claude_code.tool` span, attribute `output` for commands and `content` for files read.
+
+The log's event name is in its `body` column (in viewer v0.7.0 the `event_name` column is empty). These queries were run against a `capture=full` sandbox; to restrict any of them to one sandbox, add `AND resource.attributes."sandbox.name"::VARCHAR = 'my-sbx'` to its `WHERE` clause (before the `ORDER BY`):
+
+```
+# your prompts and Claude's replies, in order
+otel-desktop-viewer query "SELECT timestamp, CAST(body AS VARCHAR) AS event, attributes.\"prompt\"::VARCHAR AS prompt, attributes.\"response\"::VARCHAR AS response FROM logs WHERE CAST(body AS VARCHAR) IN ('claude_code.user_prompt', 'claude_code.assistant_response') ORDER BY timestamp"
+
+# the commands Claude ran
+otel-desktop-viewer query "SELECT start_time, attributes.\"full_command\"::VARCHAR AS command FROM spans WHERE name = 'claude_code.tool' ORDER BY start_time"
+
+# tool output, as the JSON events attached to each tool span
+otel-desktop-viewer query "SELECT start_time, to_json(events) AS events FROM spans WHERE name = 'claude_code.tool' ORDER BY start_time"
+```
+
+**Secrets.** With `tools` the full text of every Bash command is recorded. Claude Code masks values it recognises as secrets, but that is pattern matching, not a guarantee. In a test with made-up values (one command per shape), these were masked or absent from telemetry: `export DB_PASSWORD=...`, `API_TOKEN=...`, `AWS_SECRET_ACCESS_KEY=...`, an `Authorization: Bearer ...` header, and a GitHub `ghp_...` token. These were recorded in clear text: a password inside a URL (`postgres://user:password@host/db`), an `sk-ant-...`-style key passed as a bare argument, and a password written in ordinary words. So do not rely on masking. `full` records everything above, including the contents of any file Claude reads, with no masking tested at all. The data goes to your local viewer only, but `--db` writes it to disk; keep `tools` and `full` for sandboxes whose work is safe to keep.
 
 ## Finding one sandbox's telemetry
 
@@ -148,11 +201,11 @@ Why these choices:
 
 - **Other programs in the sandbox inherit the settings.** The env file is sourced by every non-interactive bash, so anything you run in the sandbox (including through Claude's Bash tool, which sees the `OTEL_*` variables) that uses an OpenTelemetry SDK will also send to the viewer, with the same `sandbox.*` attributes. `OTEL_SDK_DISABLED=true` in front of a command should opt it out (a standard OpenTelemetry variable; not tested here).
 - **`OTEL_RESOURCE_ATTRIBUTES` is replaced, not extended.** Add attributes with `extraResourceAttributes`.
-- **Viewer down is safe, but not free.** Claude runs normally and the export is dropped; nothing queues or errors. A one-shot `claude -p` was consistently about 2 seconds slower with the viewer down (mean 9.1s against 7.0s and 7.2s with it up, 5 runs each, 15 of 15 answered), most likely the exit-time flush waiting on the failed export. Interactive sessions and long runs were not measured.
+- **Viewer down is safe, but not free.** Claude runs normally and the export is dropped; nothing queues or errors. A one-shot `claude -p` was consistently about 2 seconds slower with the viewer down (mean 9.1s against 7.0s and 7.2s with it up, 5 runs each, 15 of 15 answered). The cause is Claude Code retrying: against a test receiver that refused every export, Claude made about three attempts per signal per run and the run took about 2 seconds longer. That cost is paid once, at exit; I measured it for one-shot runs only.
 - **Kit settings are fixed at create.** To change `viewerPort`, `capture`, `accountIds` and so on, remove the sandbox and create a new one. The wrapper will not change them for an existing sandbox.
 - **Names are labels, not proof.** Anything running in the sandbox can change `sandbox.name` and `sandbox.id`. In a test, putting `OTEL_RESOURCE_ATTRIBUTES="sandbox.name=some-other-sandbox,..."` in front of one `claude -p` command made all of that run's spans, logs and metrics arrive under the other name. Code in a sandbox can also send OTLP straight to the viewer claiming any name, and the viewer does not authenticate. Use the names to find your own telemetry, not for audit or security decisions.
 - **What the kit opens on your machine.** One allow rule, for `localhost:<viewerPort>`, which is the viewer's OTLP receiver. That is a write path: a sandbox can add (or flood) telemetry. The viewer's query UI is on a different port that the kit does not open. Your own sbx policy can allow more than the kit asks for: on a machine with an allow-all policy, a sandbox could also reach the UI port (seen in testing).
-- **A run's spans may occasionally be missing.** In three early test runs (of about 60) a `claude -p` run's spans did not arrive while its logs and metrics did. It did not reproduce in 60 later runs, whether piped, back to back or spaced out, and the cause is unknown. If a trace is missing, that session's logs and metrics are still there (filter by `session.id`).
+- **A run's spans may occasionally be missing.** In three early test runs (of roughly 150 since) a `claude -p` run's spans did not arrive while its logs and metrics did, and I could not reproduce it or explain it. Ruled out by testing: repeated runs, piped output, idle gaps, a slow receiver, a single failed export (Claude retries about three times), and parallel runs from one or two sandboxes (24 of 24 traces stored, no rejections). In a long-lived session spans are exported while it runs (each prompt's trace arrived within seconds, and nothing more arrived at exit), so the risk is mainly one-shot `claude -p` runs, whose spans go out in one export at exit. If a trace is missing, that session's logs and metrics are still there (filter by `session.id`).
 - **Org policy.** If your organization governs sandbox network or filesystem policy, it can still block the allow rule or mounts. `sbx policy log my-sbx` shows what was blocked.
 - **Only the `claude` agent was tested.** `claude-bedrock` should behave the same but is untested.
 
@@ -167,6 +220,8 @@ tests/kit.sh        # fast: the kit's argument patterns, checked exhaustively an
 tests/e2e.sh        # full: real sandboxes and Claude calls
 ```
 
-`e2e.sh` creates five sandboxes, starts its own viewer on ports 14318 and 18000 (it never touches one you already run), makes real Claude calls (a few cents), and checks the env, the sandbox name on spans, logs and metrics, restart behaviour, the wrapper reattaching or refusing a sandbox of another agent, a viewer port clash, identifiers, the viewer-down case, kit args (including rejection of bad values) and the policy log. It cleans up after itself.
+`e2e.sh` creates five sandboxes, starts its own viewer on ports 14318 and 18000 (it never touches one you already run), makes real Claude calls (a few cents), and checks the env, the sandbox name on spans, logs and metrics, restart behaviour, the wrapper reattaching or refusing a sandbox of another agent, a viewer port clash, identifiers, what each capture mode records (every cell of the table above), the viewer-down case, kit args (including rejection of bad values) and the policy log. It cleans up after itself.
+
+**CI.** `.github/workflows/ci.yml` runs `shellcheck` and the three fast suites on Ubuntu, for pushes to `main` and for pull requests, but only when `bin/`, `kit/`, `install.sh`, `tests/` or the workflow itself change (a README-only push does not run it). It is built to be cheap: one job, nothing to install or cache, a 3-minute cap, and a run that a newer push has made pointless is cancelled. The tests themselves take about 10 seconds. GitHub documents standard runners as free for public repositories; the workflow is kept small anyway in case that ever changes. `e2e.sh` is not in CI because it needs a real `sbx` and a Claude account, so run it by hand before a release.
 
 See [PLAN.md](PLAN.md) for the design, decisions and spike results.

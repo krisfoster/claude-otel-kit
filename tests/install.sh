@@ -15,6 +15,11 @@ quiet() { "$@" >/dev/null 2>&1; }
 fails() { ! "$@" >/dev/null 2>&1; }
 # A port nothing listens on, so --check reaches the "nothing is listening" branch.
 P=14999
+# The wrapper insists on an installed otel-desktop-viewer; a stub keeps these tests independent of the host.
+mkdir -p "$T/fakebin"
+printf '#!/bin/sh\necho "  query    Run SQL"\n' >"$T/fakebin/otel-desktop-viewer"
+chmod +x "$T/fakebin/otel-desktop-viewer"
+PATH="$T/fakebin:$PATH"
 
 check "install creates the link"        quiet "$ROOT/install.sh" --bin-dir "$T/bin"
 check "link points at the repo wrapper" test "$(readlink "$T/bin/claude-otel")" = "$ROOT/bin/claude-otel"

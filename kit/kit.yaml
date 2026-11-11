@@ -21,11 +21,12 @@ args:
             OTLP/HTTP port of otel-desktop-viewer on the host, 1025 to 65535. The sandbox is
             allowed to reach this port on your machine, so give it only the viewer's port.
     capture:
-        default: tools
+        default: none
         enum: [none, tools, full]
         description: >-
-            What content goes into telemetry. none = metadata only; tools = also tool names,
-            commands and file paths; full = also prompts, responses and tool output.
+            What content goes into telemetry. none (the default) = metadata only, with no command
+            text or file paths; tools = also the full text of Bash commands and file paths, which
+            can include secrets; full = also prompts, responses and tool output.
     metricIntervalMs:
         default: "10000"
         pattern: '^[0-9]{3,6}$'

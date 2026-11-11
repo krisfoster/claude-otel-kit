@@ -33,7 +33,8 @@ Usage: claude-otel [options] [sbx run args...]
 
   --port N             OTLP/HTTP port of the viewer (default $PORT)
   --ui-port N          viewer web UI port, used when starting one (default $UI_PORT)
-  --capture MODE       none | tools | full (kit default: tools)
+  --capture MODE       none | tools | full (default none): none records metadata only, tools adds
+                       commands and file paths, full adds prompts, replies and tool output
   --start-viewer       start otel-desktop-viewer if nothing is listening on --port
   --db FILE            with --start-viewer: persist telemetry to this DuckDB file
   --check              run the host checks only, do not call sbx
