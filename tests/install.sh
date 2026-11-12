@@ -150,7 +150,7 @@ hint Darwin
 check "macOS: the note suggests Homebrew"          grep -q "brew tap ctrlspice/otel-desktop-viewer" <<<"$OUT"
 hint Linux
 check "Linux: no Homebrew, mentions apt, dnf and glibc" bash -c '! grep -q brew <<<"$0" && grep -q "apt and dnf" <<<"$0" && grep -q "glibc 2.39" <<<"$0"' "$OUT"
-check "Linux: links the viewer's README"           grep -q "otel-desktop-viewer#installation" <<<"$OUT"
+check "Linux: links the viewer's README"           grep -q "otel-desktop-viewer#getting-started" <<<"$OUT"
 
 echo
 echo "passed: $PASS  failed: $FAIL"

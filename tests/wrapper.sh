@@ -231,16 +231,16 @@ hint_run() {  # SYSNAME -> OUT: no viewer on PATH
 }
 hint_run Darwin
 check "macOS: suggests Homebrew"                  has "brew tap ctrlspice/otel-desktop-viewer" "$OUT"
-check "macOS: still links the viewer's README"    has "otel-desktop-viewer#installation" "$OUT"
+check "macOS: still links the viewer's README"    has "otel-desktop-viewer#getting-started" "$OUT"
 check "macOS: exits non-zero"                     test "$RC" != 0
 hint_run Linux
 check "Linux: does not suggest Homebrew"          lacks "brew" "$OUT"
 check "Linux: mentions apt and dnf"               has "apt (Debian, Ubuntu) or dnf (Fedora, RHEL)" "$OUT"
 check "Linux: states the glibc requirement"       has "glibc 2.39" "$OUT"
-check "Linux: links the viewer's README"          has "otel-desktop-viewer#installation" "$OUT"
+check "Linux: links the viewer's README"          has "otel-desktop-viewer#getting-started" "$OUT"
 hint_run MINGW64_NT-10.0
 check "Windows: no Homebrew or apt advice, just the link" lacks "brew" "$OUT"
-check "Windows: links the viewer's README"        has "otel-desktop-viewer#installation" "$OUT"
+check "Windows: links the viewer's README"        has "otel-desktop-viewer#getting-started" "$OUT"
 
 echo "== required host tools"
 mkdir -p "$T/min"

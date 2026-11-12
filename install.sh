@@ -101,7 +101,7 @@ case "$ACTION" in
         Darwin) echo "  brew tap ctrlspice/otel-desktop-viewer && brew install --cask otel-desktop-viewer" ;;
         Linux)  echo "  apt and dnf repositories and release binaries are available (release binaries need glibc 2.39 or newer)." ;;
       esac
-      echo "  options and exact commands: https://github.com/CtrlSpice/otel-desktop-viewer#installation"
+      echo "  options and exact commands: https://github.com/CtrlSpice/otel-desktop-viewer#getting-started"
     fi
     echo "try: claude-otel --help"
     ;;

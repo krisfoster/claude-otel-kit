@@ -39,7 +39,7 @@ Args: `viewerPort` (default 4318), `capture` (`none|tools|full`, default `none`)
 
 Capture mapping: `none` = nothing (the default); `tools` = `OTEL_LOG_TOOL_DETAILS=1`; `full` = also `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`, `OTEL_LOG_TOOL_CONTENT`. What each mode actually records, and where it appears, was measured (2026-11-12) and is tabulated in the README; `tests/e2e.sh` checks every cell of that table.
 
-Host wrapper `bin/claude-otel` (kits cannot run host code): checks `otel-desktop-viewer` is installed (prints the brew install command and exits if not), checks the port is listening (warns, `--start-viewer` starts one the wrapper owns, optional `--db FILE` for persistence), then `exec sbx run claude --kit kit/ ...`. For a sandbox that already exists (`--name` matches `sbx ls`) it reattaches with plain `sbx run`, because sbx only accepts `--kit` at create; the sandbox's own port is read from its env.
+Host wrapper `bin/claude-otel` (kits cannot run host code): checks that `curl` and `ps` exist and that `otel-desktop-viewer` is installed (it prints an OS-specific install hint and exits if not), checks the port is listening (warns, `--start-viewer` starts one the wrapper owns, optional `--db FILE` for persistence), then `exec sbx run claude --kit kit/ ...`. For a sandbox that already exists (`--name` matches `sbx ls`) it reattaches with plain `sbx run`, because sbx only accepts `--kit` at create; the sandbox's own port is read from its env.
 
 Install: `install.sh` symlinks `bin/claude-otel` into `~/.local/bin` (or `--bin-dir`), refuses to overwrite foreign files without `--force`, and `uninstall` only removes its own link. The wrapper resolves symlinks to find `kit/`. The kit needs no install.
 
@@ -55,7 +55,6 @@ Layout:
     tests/e2e.sh               real sandboxes and Claude calls, run by hand
     README.md                  usage, capture modes and how to read captured text, known behaviour
     PLAN.md                    this file
-    REVIEW.md                  the adversarial review, its fixes and the open observation (finding 17)
 
 ## Decisions (approved)
 
@@ -81,6 +80,8 @@ Original risks, and how they turned out:
 - gRPC through the sandbox proxy is unproven; not used: **still true**.
 
 ## Verification
+
+(All six checks below were done; they are automated in `tests/e2e.sh`, and the hermetic suites cover the wrapper and installer.)
 
 1. Spike 1 (gate): fresh sandbox + viewer running, `claude -p "say ok"`; viewer `services`, `traces`, `logs`, `metrics` show `sandbox.name`.
 2. Two sandboxes show different names.
@@ -118,30 +119,43 @@ Setup: `sbx create claude --kit ./kit --name otel-spike1` (no workspace; the org
 - Side effect to document: the env file is sourced by every non-interactive bash in the sandbox (BASH_ENV), so other OpenTelemetry-instrumented programs run in the sandbox inherit the endpoint and exporter settings and would send to the viewer too, carrying the same `sandbox.*` attributes. Confirmed for Claude's own Bash tool (it sees the `OTEL_*` variables (10 at the time of this spike; the count has since changed)). If this is unwanted, scope the vars to the `claude` process with a launcher wrapper (future option).
 - `sbx kit validate ./kit` created the shared `sbx-kit-builder` sandbox on first use.
 
-## Review follow-up (2026-11-11)
+## Review follow-up (2026-11-11 and 2026-11-12)
 
-Findings 1 to 3 of REVIEW.md were fixed: the wrapper reattaches to existing sandboxes (and, while testing it, a `set -e` exit when the sandbox had no kit was found and fixed); `accountIds` defaults to off; the README's sbx floor is now v0.51.0 (the release where built-in agents became v3 kits) and the viewer-down claim was replaced by a measurement (about 2s slower for `claude -p`, 5 runs per condition). New tests: `tests/wrapper.sh` (26 hermetic checks) and additions to `tests/e2e.sh`.
+An adversarial review of the repo (it attacked the code by running it: argument injection, old bash, re-runs, other env injection, whether the README's claims held) produced the fixes below. The review notes themselves are kept outside the repository; everything that matters is recorded here and in the README.
 
-Findings 4 and 5 were fixed the same day: `claude-otel --stop-viewer` (verifies the pid file's process is an `otel-desktop-viewer` started with that exact `--http` port before signalling, and otherwise only cleans up), and a README section on commands and secrets backed by a measurement of which secret shapes Claude Code masks. Tests: 25 more hermetic checks in `tests/wrapper.sh` (51 total) and 7 more in `tests/e2e.sh` (57 total).
+**Wrapper.**
+- It reattaches to an existing sandbox instead of failing on `--kit`, reading that sandbox's own viewer port and warning when `--port` or `--capture` cannot apply (kit settings are fixed at create).
+- It refuses a sandbox that belongs to another agent before running anything in it, and explains a failed `--start-viewer` (shows the viewer's own error, kills what it started, removes the pid file).
+- `--stop-viewer` only signals a process that is verifiably an `otel-desktop-viewer` started with that exact port; a stale pid file is cleaned up without signalling anything.
+- `claude-otel` options placed after sbx options now get a clear message instead of an sbx "unknown flag".
+- It checks that `curl` and `ps` exist, and gives OS-specific viewer install hints.
 
-Second review pass (findings 12 to 15, same day): the wrapper refuses sandboxes of another agent before touching them, cleans up and explains a failed `--start-viewer`, and the README and tests were tightened. `tests/wrapper.sh` is now 69 hermetic checks (mutation-tested); `tests/e2e.sh` adds real-sbx cases for both.
+**Kit and installer.**
+- `accountIds` defaults to off, so `user.account_uuid` and `user.account_id` are not sent (`user.email`, `user.id` and `organization.id` always are; Claude Code does not allow turning them off).
+- `viewerPort` is exactly 1025 to 65535 in both the kit and the wrapper (the floor is 1025 because `--start-viewer` uses the port below for gRPC).
+- The installer replaces or removes a link left by a moved or deleted checkout without `--force`, needs `--force` for another live checkout's link, and never touches a foreign file or a real directory.
 
-Findings 6 to 8 (same day): the installer handles stale and foreign links safely (`tests/install.sh` 40 checks), `viewerPort` is exactly 1025 to 65535 in the kit and the wrapper (`tests/kit.sh` 30 checks, wrapper 116), and the README documents that sandbox names are forgeable (demonstrated) and what the kit opens on the host. Found along the way: options after sbx options now get a clear error (finding 16), and an unreproduced intermittent loss of spans (finding 17).
+**Defaults and docs.**
+- The default `capture` is now `none` (decision 3, changed 2026-11-12 at the owner's request): a measurement showed `tools` records some secret shapes in clear text. `tools` and `full` stay available per sandbox, and the README documents what each records, where to read it, and example queries that were run as written.
+- The sbx floor is documented as v0.51.0 (the release where built-in agents became v3 kits), the viewer-down cost as measured (Claude Code's own exit-time retries add about 2 seconds to a one-shot `claude -p`), and sandbox names as forgeable labels (demonstrated).
 
-Finding 17 (missing spans) was investigated with a recording fake receiver and fault injection: slow receivers, failed exports, concurrency and a long-lived streaming session were all ruled out, the cause of the viewer-down delay was found (Claude retries failed exports about three times at exit), and the original episodes remain unexplained. Details in REVIEW.md.
+**Platforms.** The host side targets macOS and Linux. Windows is not supported and gets a warning, not a refusal (native shells and WSL are detected through `uname`). Verified on macOS (bash 3.2 and 5) and Ubuntu 24.04. Not verified: `sbx` and the kit on a Linux host, and anything on Windows.
 
-Remaining-items round (2026-11-12): the e2e polls instead of sleeping; a GitHub Actions workflow runs shellcheck and the three fast suites on Ubuntu only when code or tests change (one job, no installs, 3 minute cap, concurrency cancel, actions pinned by SHA, linted with actionlint); the fast suites were verified on Ubuntu 24.04, which found and fixed a hidden dependence on an installed viewer.
+**Tests and CI.** `tests/wrapper.sh` (149 checks), `tests/install.sh` (55) and `tests/kit.sh` (30) are hermetic; the new checks were mutation-tested (each deliberately broken change was caught). `tests/e2e.sh` (80 checks, real sandboxes) polls instead of sleeping and checks every cell of the README's capture table. A GitHub Actions workflow runs shellcheck and the three fast suites on Ubuntu, and the suites on macOS under the system bash 3.2, only when code or tests change (no installs, 3 minute cap per job, superseded runs cancelled, actions pinned by SHA, linted with actionlint). First real runs (2026-11-11): the Ubuntu job took 29 seconds and the macOS job 20, 32 seconds in all; the macOS log confirms GNU bash 3.2.57; both jobs passed 55, 2 (plus 1 skipped: no `sbx` on the runners) and 149 checks. Running the suites on Ubuntu found and fixed a hidden dependence on an installed viewer.
 
-Decision 3 changed (2026-11-12): the default `capture` is now `none`. The owner chose this after the measurement showed `tools` records some secret shapes in clear text. `tools` and `full` stay available per sandbox.
-
-Platforms (2026-11-12): the host side targets macOS and Linux; Windows is not supported and gets a warning, not a refusal (native shells and WSL are both detected through `uname`). The wrapper and installer give OS-specific viewer install hints (Homebrew on macOS; apt, dnf and release binaries with the glibc 2.39 requirement on Linux), and the wrapper now checks for `curl` and `ps` instead of misreporting a missing `curl` as "nothing is listening". The e2e no longer needs `lsof`. Verified on macOS (bash 3.2 and 5) and Ubuntu 24.04. Not verified: `sbx` and the kit on a Linux host, and anything on Windows.
+**One unexplained observation: a run's spans occasionally missing.** In three early experiments, spans from some one-shot `claude -p` runs did not reach the viewer although the same runs' logs and metrics did. About 150 later runs produced a trace every time, so the cause is unknown. Ruled out by testing with a recording fake receiver and fault injection: repeated and back-to-back runs, piped output, idle gaps, a slow receiver (trace requests read up to 8 seconds late, logs and metrics answered up to 6 seconds late), a single failed export (Claude Code retries each failed export about three times), and parallel runs from one and two sandboxes (24 of 24 traces stored, no rejections). In a long-lived session spans are exported while it runs, and nothing more arrived at exit. If it recurs, capture the run's `claude --debug-file` log, the viewer's `ingest_rejections` table and `sbx policy log` for the sandbox at once.
 
 ## Remaining work
 
-Done: wrapper, installer, four test suites, CI, README (including the capture modes and how to read captured prompts, replies, commands and tool output, every example run as written), and the Bash-tool check (Claude's Bash tool sees the `OTEL_*` variables, documented in the README under Known behaviour).
+Decisions taken (2026-11-12): no Linux sandbox-side testing and no restrictive-policy testing for now (no environment available); the clean-first-run test is paused (it needs the shared `sbx-kit-builder` removed, which drops its build cache); Windows stays unsupported; the missing-spans observation gets one hour of soak testing (`tests/soak.py`).
+
+Missing spans, current understanding: in short one-shot runs (about 3 seconds in all) the trace export can be lost entirely, or partly, while logs and metrics survive; in slower runs (about 7 seconds) it has not been seen. The recording relay in `tests/soak.py` showed the trace POST never leaving the sandbox in those runs. The speed of a run depends on factors outside the kit (API latency and what Claude Code's start-up has cached), which is why the loss came and went. Claude Code has undocumented settings that may bear on this (`CLAUDE_CODE_OTEL_SHUTDOWN_TIMEOUT_MS`, `CLAUDE_CODE_OTEL_FLUSH_TIMEOUT_MS`, `CLAUDE_CODE_EAGER_FLUSH`); they are being compared under identical conditions in the soak.
 
 Open, optional:
-- Prove the `localhost:<port>` allow rule is required, on a machine with a restrictive (non-Allow_All) policy.
-- Scope the variables to the `claude` process only (launcher wrapper) if the inheritance by other programs proves unwanted.
-- Try `claude-bedrock`.
+- Prove the `localhost:<port>` allow rule is required, on a machine with a restrictive (non-allow-all) policy.
+- A clean first run of the Quick start (paused).
+- `sbx` and the kit on a Linux host (only the host scripts have been run on Linux); Windows is unsupported and untested.
+- Scope the telemetry variables to the `claude` process only, if other programs in the sandbox inheriting them proves unwanted.
+- Whether a different OTLP timeout shortens the roughly 2 second exit delay when the viewer is down (that delay is Claude Code's own retrying).
+- `claude-bedrock` is untested.
 - Publish the kit to a registry (`docker buildx build -f kit/kit.yaml`).

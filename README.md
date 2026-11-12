@@ -75,7 +75,7 @@ The host scripts need `bash` 3.2 or newer, `curl`, a `ps` that supports `ps -p P
 - `sbx` v0.51.0 or later, signed in. That is the release where the built-in agents (including `claude`) became published v3 kits ([release notes](https://docs.docker.com/ai/sandboxes/release-notes/)); the sbx docs say v3 kits cannot compose with older, non-v3 agents, so earlier versions are not expected to work with this kit (no earlier version was tried). Tested on v0.51.0.
 - otel-desktop-viewer on the host, with the `query` command (v0.7.0 has it). The kit cannot install it for you. Install it for your OS:
   - **macOS:** `brew tap ctrlspice/otel-desktop-viewer && brew install --cask otel-desktop-viewer`. The viewer's README lists a prebuilt binary for Apple Silicon only; on an Intel Mac you would build it with `go install` (Go 1.26, CGO).
-  - **Linux:** apt (Debian, Ubuntu) and dnf (Fedora, RHEL) repositories and release binaries for x86_64 and arm64 are available. The release binaries need glibc 2.39 or newer (Ubuntu 24.04+, Debian 13+, Fedora 40+). The exact commands are in the [viewer's README](https://github.com/CtrlSpice/otel-desktop-viewer#installation); check them before running, since they add a package repository.
+  - **Linux:** apt (Debian, Ubuntu) and dnf (Fedora, RHEL) repositories and release binaries for x86_64 and arm64 are available. The release binaries need glibc 2.39 or newer (Ubuntu 24.04+, Debian 13+, Fedora 40+). The exact commands are in the [viewer's README](https://github.com/CtrlSpice/otel-desktop-viewer#getting-started); check them before running, since they add a package repository.
 
 ## Install
 
@@ -97,7 +97,7 @@ With the host checks (recommended):
 claude-otel --start-viewer --name my-sbx .
 ```
 
-The wrapper checks the viewer is installed (prints the install command and stops if not), checks something is listening on the OTLP port (warns if not, or starts one with `--start-viewer`), then runs `sbx run claude --kit kit/ ...`. Everything after its own options goes to `sbx run`, so put the wrapper's options first (`claude-otel --port 4319 --name my-sbx .`). If one turns up after an sbx option, the wrapper says so instead of letting `sbx` fail with "unknown flag". Options that take a value are written `--port N`, not `--port=N`.
+The wrapper checks that `curl` and `ps` exist, that the viewer is installed (it prints how to install it for your OS and stops if not), and that something is listening on the OTLP port (it warns if not, or starts one with `--start-viewer`), then runs `sbx run claude --kit kit/ ...`. Everything after its own options goes to `sbx run`, so put the wrapper's options first (`claude-otel --port 4319 --name my-sbx .`). If one turns up after an sbx option, the wrapper says so instead of letting `sbx` fail with "unknown flag". Options that take a value are written `--port N`, not `--port=N`.
 
 Or use the kit directly:
 
@@ -226,14 +226,19 @@ Why these choices:
 The tests need `bash`, `curl` and `python3` on macOS or Linux; `e2e.sh` also needs `sbx`, a viewer with `query`, and a signed-in sbx. They use no `lsof` or other OS-specific tools. `e2e.sh` refuses to run if its ports (14318 and 18000) are already in use.
 
 ```
-tests/install.sh    # fast: installer and wrapper symlink handling, no sandboxes or API calls
-tests/wrapper.sh    # fast: the wrapper's decisions (create vs reattach, ports, warnings) against a fake sbx
+tests/install.sh    # fast: installer (links, stale and foreign files), wrapper symlinks, platform warnings and install hints
+tests/wrapper.sh    # fast: the wrapper's decisions (create vs reattach, ports, stop, warnings, platforms, required tools) against a fake sbx
 tests/kit.sh        # fast: the kit's argument patterns, checked exhaustively and against real `sbx kit validate`
 tests/e2e.sh        # full: real sandboxes and Claude calls
+tests/soak.py       # manual, not in CI: long runs with a recording relay, to study the occasional missing spans
 ```
 
 `e2e.sh` creates five sandboxes, starts its own viewer on ports 14318 and 18000 (it never touches one you already run), makes real Claude calls (a few cents), and checks the env, the sandbox name on spans, logs and metrics, restart behaviour, the wrapper reattaching or refusing a sandbox of another agent, a viewer port clash, identifiers, what each capture mode records (every cell of the table above), the viewer-down case, kit args (including rejection of bad values) and the policy log. It cleans up after itself.
 
-**CI.** `.github/workflows/ci.yml` runs on pushes to `main` and on pull requests, but only when `bin/`, `kit/`, `install.sh`, `tests/` or the workflow itself change (a README-only push does not run it). Two small jobs run side by side: Ubuntu runs `shellcheck` and the three fast suites, and macOS runs the same suites under the system bash 3.2, so both supported hosts are checked on every change. It is built to be cheap: nothing to install or cache, a 3-minute cap per job, and a run that a newer push has made pointless is cancelled. GitHub documents standard runners as free for public repositories; if this repo ever goes private, macOS minutes are billed at ten times the Linux rate, so delete the `macos` job to go back to Ubuntu only. `e2e.sh` is not in CI because it needs a real `sbx` and a Claude account, so run it by hand before a release.
+**CI.** `.github/workflows/ci.yml` runs on pushes to `main` and on pull requests, but only when `bin/`, `kit/`, `install.sh`, `tests/` or the workflow itself change (a README-only push does not run it). Two small jobs run side by side: Ubuntu runs `shellcheck` and the three fast suites, and macOS runs the same suites under the system bash 3.2, so both supported hosts are checked on every change. It is built to be cheap: nothing to install or cache, a 3-minute cap per job, and a run that a newer push has made pointless is cancelled. Measured on GitHub, a whole run takes about 30 seconds (the Ubuntu job about 30, the macOS job about 20). GitHub documents standard runners as free for public repositories; if this repo ever goes private, macOS minutes are billed at ten times the Linux rate, so delete the `macos` job to go back to Ubuntu only. `e2e.sh` is not in CI because it needs a real `sbx` and a Claude account, so run it by hand before a release.
 
 See [PLAN.md](PLAN.md) for the design, decisions and spike results.
+
+## License
+
+Apache-2.0; see [LICENSE](LICENSE).

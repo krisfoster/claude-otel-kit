@@ -77,7 +77,7 @@ viewer_install_help() {
     Darwin) echo "Install it with:   brew tap ctrlspice/otel-desktop-viewer && brew install --cask otel-desktop-viewer" >&2 ;;
     Linux)  echo "Install it from the project's apt (Debian, Ubuntu) or dnf (Fedora, RHEL) repository, or a release binary (x86_64 or arm64; needs glibc 2.39 or newer: Ubuntu 24.04+, Debian 13+, Fedora 40+)." >&2 ;;
   esac
-  echo "Install options and exact commands: https://github.com/CtrlSpice/otel-desktop-viewer#installation" >&2
+  echo "Install options and exact commands: https://github.com/CtrlSpice/otel-desktop-viewer#getting-started" >&2
 }
 
 viewer_up() {
